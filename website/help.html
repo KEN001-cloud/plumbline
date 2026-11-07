@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Help center — Plumbline</title>
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.0/dist/umd/supabase.js"></script>
+<script src="assets/data.js"></script>
+<script src="assets/app.js"></script>
+<script>
+document.addEventListener('alpine:init', () => {
+  Alpine.data('help', () => ({
+    q: '', cat: 'All', openQ: PL_DATA.HELP_FAQ[0][1],
+    cats: ['All', 'Getting started', 'Account', 'Verification', 'Tasks', 'Payments'],
+    form: { name: '', email: '', topic: 'Application or onboarding', message: '' },
+    busy: false, err: '', ref: '', sentTo: '',
+    supportEmail: PL.cfg.SUPPORT_EMAIL || '',
+    async init() {
+      const s = await PL.session().catch(() => null);
+      if (s) { this.form.email = s.user.email; const p = await PL.profile().catch(() => null); if (p && p.name) this.form.name = p.name; }
+    },
+    get list() {
+      const ql = this.q.trim().toLowerCase();
+      return PL_DATA.HELP_FAQ.filter((f) => (this.cat === 'All' || f[0] === this.cat) && (!ql || f.join(' ').toLowerCase().includes(ql)));
+    },
+    async send() {
+      this.err = '';
+      const f = this.form;
+      if (!f.name.trim()) { this.err = 'Please enter your name.'; return; }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email.trim())) { this.err = 'Please enter a valid email address.'; return; }
+      if (!f.message.trim()) { this.err = 'Please write a message.'; return; }
+      this.busy = true;
+      try {
+        this.ref = await PL.sendMessage('support', { name: f.name.trim(), email: f.email.trim(), topic: f.topic, message: f.message.trim() });
+        this.sentTo = f.email.trim();
+        f.message = '';
+      } catch (e) { this.err = PL.friendly(e); }
+      this.busy = false;
+    }
+  }));
+});
+</script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
+</head>
+<body id="top">
+<header id="site-header" data-active="help"></header>
+<div x-data="help">
+  <section style="background: var(--ink); color: var(--ground)">
+    <div class="container" style="max-width: 860px; padding-block: 72px; text-align: center">
+      <p class="eyebrow" style="color: #A9ADA4">Help center</p>
+      <h1 class="h1" style="font-size: clamp(38px, 6vw, 64px); margin-bottom: 28px">How can we help?</h1>
+      <label for="hp-q" class="sr-only">Search help articles</label>
+      <input id="hp-q" class="input" type="search" x-model="q" placeholder="Search: payments, verification, password…" style="border: 0; border-radius: 999px; padding: 16px 24px; font-size: 17px; min-height: 56px">
+    </div>
+  </section>
+
+  <main class="container row" style="padding-block: 56px 96px; gap: 40px">
+    <div style="flex: 2 1 560px; min-width: 0">
+      <div class="chips" role="group" aria-label="Topics" style="margin-bottom: 22px"><template x-for="c in cats" :key="c"><button type="button" class="chip" :aria-pressed="cat === c" @click="cat = c" x-text="c"></button></template></div>
+      <p class="mono muted" aria-live="polite" style="margin: 0 0 10px; font-size: 13px" x-text="list.length + (list.length === 1 ? ' article' : ' articles')"></p>
+      <div style="border-bottom: 1px solid var(--ink)" x-show="list.length">
+        <template x-for="f in list" :key="f[1]">
+          <div class="acc-item">
+            <button type="button" class="acc-btn" :aria-expanded="openQ === f[1]" @click="openQ = openQ === f[1] ? '' : f[1]">
+              <span class="stack" style="gap: 4px"><span class="mono muted" style="font-size: 11px; letter-spacing: .06em; text-transform: uppercase" x-text="f[0]"></span><span class="acc-q" x-text="f[1]"></span></span>
+              <span class="acc-sign" aria-hidden="true" x-text="openQ === f[1] ? '−' : '+'"></span>
+            </button>
+            <p class="acc-a" x-show="openQ === f[1]" x-text="f[2]"></p>
+          </div>
+        </template>
+      </div>
+      <div class="card" style="border: 1px dashed var(--ink); text-align: center" x-show="!list.length" x-cloak>
+        <p style="margin: 0 0 14px">No articles match that. Try another word, or send us a message.</p>
+        <button type="button" class="btn" @click="q = ''; cat = 'All'">Clear search</button>
+      </div>
+    </div>
+
+    <aside id="contact" style="flex: 1 1 320px; min-width: 0; scroll-margin-top: 90px">
+      <div class="card-hard" style="padding: 26px; box-shadow: 6px 6px 0 var(--ink)">
+        <div x-show="!ref">
+          <h2 class="h3" style="font-weight: 700; font-size: 28px; margin-bottom: 6px">Still need help?</h2>
+          <p class="muted" style="margin: 0 0 18px">Send us a message<span x-show="supportEmail" x-text="', or write to ' + supportEmail"></span>.</p>
+          <form class="stack" style="gap: 14px" @submit.prevent="send()" novalidate>
+            <div class="field"><label class="label" for="hp-name">Name</label><input id="hp-name" class="input" type="text" autocomplete="name" x-model="form.name"></div>
+            <div class="field"><label class="label" for="hp-email">Email</label><input id="hp-email" class="input" type="email" autocomplete="email" x-model="form.email"></div>
+            <div class="field"><label class="label" for="hp-topic">Topic</label><select id="hp-topic" class="input" x-model="form.topic"><option>Application or onboarding</option><option>Signing in</option><option>Identity verification</option><option>Tasks and projects</option><option>Payments</option><option>Account</option><option>Something else</option></select></div>
+            <div class="field"><label class="label" for="hp-msg">Message</label><textarea id="hp-msg" class="input" rows="5" maxlength="5000" x-model="form.message"></textarea></div>
+            <button type="submit" class="btn btn-lg btn-primary" :disabled="busy" x-text="busy ? 'Sending…' : 'Send message'"></button>
+            <p class="alert alert-err" role="alert" x-show="err" x-text="err"></p>
+          </form>
+        </div>
+        <div x-show="ref" x-cloak role="status">
+          <h2 class="h3" style="font-weight: 700; font-size: 28px; margin-bottom: 10px">Message sent.</h2>
+          <p style="margin: 0 0 18px; color: var(--ink-2)">Your reference is <strong style="color: var(--ink)" x-text="ref"></strong>. We'll reply to <strong style="color: var(--ink)" x-text="sentTo"></strong>.</p>
+          <button type="button" class="btn btn-dark" @click="ref = ''">Write another</button>
+        </div>
+      </div>
+      <div class="stack" style="margin-top: 20px; gap: 4px">
+        <a href="apply.html" style="padding: 8px 0; font-weight: 600; text-decoration: none">→ Start or continue your application</a>
+        <a href="workspace.html" style="padding: 8px 0; font-weight: 600; text-decoration: none">→ Go to your workspace</a>
+        <a href="legal.html" style="padding: 8px 0; font-weight: 600; text-decoration: none">→ Terms, privacy &amp; fellow agreement</a>
+      </div>
+    </aside>
+  </main>
+</div>
+<footer id="site-footer"></footer>
+</body>
+</html>

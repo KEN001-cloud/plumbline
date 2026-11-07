@@ -1,0 +1,470 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workspace — Plumbline</title>
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.0/dist/umd/supabase.js"></script>
+<script src="assets/data.js"></script>
+<script src="assets/app.js"></script>
+<script>
+document.addEventListener('alpine:init', () => {
+  const D = PL_DATA;
+  Alpine.data('ws', () => ({
+    D, loading: true, err: '', p: null, done: [], apps: [], tasks: [], subs: [], payouts: [], notes: [], appeal: null, appealText: '', minutes: '',
+    members: [], taskMap: {}, joinBusy: '',
+    invites: [], stats: {}, inv: { role: '', task: '' }, invBusy: false, invErr: '', copied: '', invited: null,
+    tab: (['tasks', 'training', 'payments', 'inbox', 'refer', 'profile'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'tasks'),
+    active: null, ratings: { A: 0, B: 0 }, pref: '', just: '', flagged: false, busy: false, justSubmitted: false,
+    openGuide: -1,
+    payout: '', paySaved: false,
+    form: { name: '', field: '', hours: '', paused: false }, profileSaved: false,
+    async init() {
+      if (!PL.configured) { this.err = PL.NOT_CONFIGURED; this.loading = false; return; }
+      const s = await PL.requireAuth('workspace.html');
+      if (!s) return;
+      try {
+        this.p = await PL.profile();
+        const { data, error } = await PL.sb.from('task_submissions').select('*').eq('user_id', s.user.id).order('created_at', { ascending: false });
+        if (error) throw error;
+        this.subs = data || [];
+        this.done = this.subs.map((r) => r.task_id);
+        const a = await PL.sb.from('applications').select('id, role, skills, status').eq('user_id', s.user.id).order('created_at');
+        const rows = a.error ? [] : (a.data || []);
+        this.apps = this.p.role && !rows.some((r) => r.role === this.p.role) ? [{ role: this.p.role, skills: [] }].concat(rows) : rows;
+        await this.loadProjects(s.user.id);
+        await this.loadOps(s.user.id);
+        await this.loadInvites(s.user.id);
+        this.payout = this.p.payout || '';
+        this.form = { name: this.p.name || '', field: this.p.field || '', hours: this.p.hours || '', paused: !!this.p.paused };
+      } catch (e) { this.err = PL.friendly(e); }
+      this.loading = false;
+      window.addEventListener('hashchange', () => { const h = location.hash.slice(1); if (['tasks', 'training', 'payments', 'inbox', 'refer', 'profile'].includes(h)) { this.tab = h; this.active = null; } });
+    },
+    async loadOps(uid) {
+      const t = await PL.sb.from('tasks').select('*').eq('active', true).order('created_at');
+      this.tasks = t.error ? [] : (t.data || []);
+      const y = await PL.sb.from('payouts').select('*').eq('user_id', uid).order('created_at', { ascending: false });
+      this.payouts = y.error ? [] : (y.data || []);
+      const n = await PL.sb.from('notifications').select('*').eq('user_id', uid).order('created_at', { ascending: false }).limit(50);
+      this.notes = n.error ? [] : (n.data || []);
+      const ap = await PL.sb.from('appeals').select('*').eq('user_id', uid).order('created_at', { ascending: false }).limit(1);
+      this.appeal = ap.error ? null : ((ap.data || [])[0] || null);
+    },
+    get unread() { return this.notes.filter((n) => !n.read_at).length; },
+    get tabs() { return [['tasks', 'Tasks'], ['training', 'Training'], ['payments', 'Payments'], ['inbox', 'Notifications' + (this.unread ? ' (' + this.unread + ')' : '')], ['refer', 'Refer & invite'], ['profile', 'Profile']]; },
+    async markRead() {
+      const ids = this.notes.filter((n) => !n.read_at).map((n) => n.id);
+      if (!ids.length) return;
+      const stamp = new Date().toISOString();
+      const { error } = await PL.sb.from('notifications').update({ read_at: stamp }).in('id', ids);
+      if (!error) this.notes = this.notes.map((n) => Object.assign({}, n, { read_at: n.read_at || stamp }));
+    },
+    taskState(id) {
+      const s = this.subs.find((x) => x.task_id === id);
+      return { approved: 'Approved', rejected: 'Rejected' }[s && s.status] || 'In review';
+    },
+    money(c) { return '$' + ((c || 0) / 100).toFixed(2); },
+    get earned() { return this.subs.filter((s) => s.status === 'approved').reduce((n, s) => n + (s.pay_cents || 0), 0); },
+    get paid() { return this.payouts.reduce((n, x) => n + x.amount_cents, 0); },
+    get reviewHours() { return (this.subs.filter((s) => s.status === 'in_review').reduce((n, s) => n + (s.minutes || 0), 0) / 60).toFixed(1); },
+    get quality() {
+      const ok = this.subs.filter((s) => s.status === 'approved').length, no = this.subs.filter((s) => s.status === 'rejected').length;
+      return ok + no ? Math.round((ok / (ok + no)) * 100) + '%' : '';
+    },
+    async sendAppeal() {
+      this.err = '';
+      if (this.appealText.trim().length < 20) { this.err = 'Please explain your appeal in at least 20 characters.'; return; }
+      this.busy = true;
+      try {
+        const { data, error } = await PL.sb.from('appeals').insert({ message: this.appealText.trim() }).select('*').single();
+        if (error) throw error;
+        this.appeal = data; this.appealText = '';
+      } catch (e) { this.err = PL.friendly(e); }
+      this.busy = false;
+    },
+    async withdraw(a) {
+      this.err = '';
+      const { error } = await PL.sb.from('applications').update({ status: 'withdrawn' }).eq('id', a.id);
+      if (error) { this.err = PL.friendly(error); return; }
+      this.apps = this.apps.map((x) => (x.id === a.id ? Object.assign({}, x, { status: 'withdrawn' }) : x));
+    },
+    async loadProjects(uid) {
+      const m = await PL.sb.from('project_members').select('project, status').eq('user_id', uid);
+      this.members = m.error ? [] : (m.data || []);
+      const t = await PL.sb.from('task_projects').select('task_id, project');
+      const map = {};
+      (t.error ? [] : (t.data || [])).forEach((r) => { (map[r.task_id] = map[r.task_id] || []).push(r.project); });
+      this.taskMap = map;
+    },
+    get banned() { return !!(this.p && this.p.banned_at); },
+    get verified() { return !!this.p && this.p.verification === 'verified'; },
+    get joinedProjects() { return this.members.filter((m) => m.status === 'joined').map((m) => m.project); },
+    get invitedProjects() { return this.banned ? [] : this.members.filter((m) => m.status === 'invited').map((m) => m.project); },
+    canDo(t) { return !this.banned && this.verified && (this.taskMap[t.id] || []).some((x) => this.joinedProjects.includes(x)); },
+    get myTasks() { return this.tasks.filter((t) => this.canDo(t)); },
+    get waitingText() {
+      if (this.banned) return 'Tasks are closed on this account.';
+      if (!this.verified) return 'Once your identity is verified, we will invite you to a project. Its tasks will appear here.';
+      if (this.invitedProjects.length) return 'Join a project above to see its tasks.';
+      if (this.joinedProjects.length) return 'Your projects have no open tasks right now. New tasks appear here as they open.';
+      return "You're verified. We will invite you to a project that matches your applications.";
+    },
+    async joinProject(project) {
+      this.joinBusy = project; this.err = '';
+      try {
+        const { data, error } = await PL.sb.rpc('join_project', { p_project: project });
+        if (error) throw error;
+        if (!data) throw new Error('This invitation is no longer open.');
+        this.members = this.members.map((m) => (m.project === project ? Object.assign({}, m, { status: 'joined' }) : m));
+      } catch (e) { this.err = PL.friendly(e); }
+      this.joinBusy = '';
+    },
+    async loadInvites(uid) {
+      const i = await PL.sb.from('invites').select('code, role, task_id').eq('inviter_id', uid).order('created_at', { ascending: false });
+      this.invites = i.error ? [] : (i.data || []);
+      const st = await PL.sb.rpc('invite_stats');
+      (st.error ? [] : (st.data || [])).forEach((r) => { this.stats[r.code] = r; });
+      this.invited = await PL.invite(this.p.invite_code || '');
+    },
+    taskName(id) { const t = this.tasks.find((x) => x.id === id); return t ? t.title : ''; },
+    get invitedIndex() {
+      if (!this.invited || !this.invited.task_id || this.done.includes(this.invited.task_id)) return -1;
+      return this.tasks.findIndex((t) => t.id === this.invited.task_id && this.canDo(t));
+    },
+    inviteTitle(x) { return [x.role, this.taskName(x.task_id)].filter(Boolean).join(' · ') || 'General referral'; },
+    inviteLink(x) {
+      const base = PL.siteBase();
+      return x.role ? base + 'job.html?role=' + encodeURIComponent(x.role) + '&ref=' + x.code : base + 'apply.html?ref=' + x.code;
+    },
+    inviteMessage(x) {
+      const what = x.task_id ? 'a task' : (x.role ? 'the ' + x.role + ' project' : 'Plumbline');
+      return 'I would like to invite you to ' + what + ' on Plumbline, paid remote work checking and teaching AI: ' + this.inviteLink(x);
+    },
+    whatsappHref(x) { return 'https://wa.me/?text=' + encodeURIComponent(this.inviteMessage(x)); },
+    emailHref(x) { return 'mailto:?subject=' + encodeURIComponent('An invitation to Plumbline') + '&body=' + encodeURIComponent(this.inviteMessage(x)); },
+    async createInvite() {
+      this.invErr = '';
+      const role = this.inv.role || null, task_id = this.inv.task || null;
+      if (this.invites.some((x) => x.role === role && x.task_id === task_id)) { this.invErr = 'You already have this link below.'; return; }
+      this.invBusy = true;
+      try {
+        const { data, error } = await PL.sb.from('invites').insert({ role, task_id }).select('code, role, task_id').single();
+        if (error) throw error;
+        this.invites = [data].concat(this.invites);
+        this.inv = { role: '', task: '' };
+      } catch (e) { this.invErr = PL.friendly(e); }
+      this.invBusy = false;
+    },
+    async copy(x) {
+      try { await navigator.clipboard.writeText(this.inviteLink(x)); this.copied = x.code; setTimeout(() => { this.copied = ''; }, 2000); }
+      catch (e) { this.invErr = 'Copying was blocked by your browser. Select the link and copy it yourself.'; }
+    },
+    setTab(t) { this.tab = t; this.active = null; this.err = ''; history.replaceState(null, '', '#' + t); },
+    get first() { return ((this.p && this.p.name) || 'Fellow').split(/\s+/)[0]; },
+    get task() { return this.active === null ? null : this.tasks[this.active]; },
+    start(i) { this.active = i; this.ratings = { A: 0, B: 0 }; this.pref = ''; this.just = ''; this.minutes = ''; this.flagged = false; this.err = ''; this.justSubmitted = false; window.scrollTo({ top: 0 }); },
+    skip() {
+      const nextIdx = this.tasks.findIndex((t, i) => i !== this.active && !this.done.includes(t.id) && this.canDo(t));
+      if (nextIdx >= 0) this.start(nextIdx); else this.active = null;
+    },
+    async submit() {
+      this.err = '';
+      if (!this.ratings.A || !this.ratings.B) { this.err = 'Rate the accuracy of both responses.'; return; }
+      if (!this.pref) { this.err = 'Choose which response is better overall.'; return; }
+      if (this.just.trim().length < 40) { this.err = 'Your justification needs at least 40 characters.'; return; }
+      if (!(Number(this.minutes) >= 1 && Number(this.minutes) <= 480)) { this.err = 'Enter the minutes you worked, between 1 and 480.'; return; }
+      this.busy = true;
+      try {
+        const t = this.task;
+        const { error } = await PL.sb.from('task_submissions').insert({ task_id: t.id, minutes: Math.round(Number(this.minutes)), rating_a: this.ratings.A, rating_b: this.ratings.B, preferred: this.pref, justification: this.just.trim(), flagged: this.flagged });
+        if (error && !/duplicate key/i.test(error.message)) throw error;
+        this.done = this.done.concat([t.id]);
+        this.subs = [{ task_id: t.id, status: 'in_review', minutes: Number(this.minutes), pay_cents: 0 }].concat(this.subs);
+        this.active = null; this.justSubmitted = true;
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      } catch (e) { this.err = PL.friendly(e); }
+      this.busy = false;
+    },
+    async savePayout() {
+      this.err = ''; this.paySaved = false;
+      if (!this.payout) { this.err = 'Choose a payout method.'; return; }
+      try { await PL.updateProfile({ payout: this.payout }); this.p.payout = this.payout; this.paySaved = true; } catch (e) { this.err = PL.friendly(e); }
+    },
+    async saveProfile() {
+      this.err = ''; this.profileSaved = false;
+      if (!this.form.name.trim()) { this.err = 'Your name can’t be empty.'; return; }
+      try {
+        await PL.updateProfile({ name: this.form.name.trim(), field: this.form.field || null, hours: this.form.hours || null, paused: this.form.paused });
+        Object.assign(this.p, { name: this.form.name.trim(), field: this.form.field, hours: this.form.hours, paused: this.form.paused });
+        this.profileSaved = true;
+      } catch (e) { this.err = PL.friendly(e); }
+    }
+  }));
+});
+</script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
+<style>
+.tabbar { display: flex; flex-wrap: wrap; gap: 4px; }
+.tabbar button { background: none; border: 0; border-bottom: 3px solid transparent; padding: 16px 14px 13px; font-size: 15px; color: var(--muted); min-height: 52px; }
+.tabbar button[aria-selected="true"] { border-bottom-color: var(--accent); color: var(--ink); font-weight: 600; }
+.rate { width: 44px; height: 44px; border-radius: 10px; border: 1px solid var(--line-2); background: #fff; }
+.rate[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.stat { background: #fff; border: 1px solid var(--line); border-radius: 16px; padding: 18px 20px; }
+.stat p:first-child { margin: 0; font-family: var(--mono); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.stat .num { margin: 6px 0 0; font-family: var(--display); font-size: 36px; letter-spacing: -.02em; }
+</style>
+</head>
+<body>
+<div x-data="ws">
+  <header style="background: var(--ink); color: var(--ground)">
+    <nav aria-label="Workspace" class="container row" style="padding-block: 12px; align-items: center; justify-content: space-between; gap: 12px">
+      <a class="brand" href="index.html" style="color: var(--ground)"><svg width="22" height="26" viewBox="0 0 26 30" aria-hidden="true"><line x1="13" y1="0" x2="13" y2="12" stroke="#F7F7F4" stroke-width="2"/><path d="M13 12 L22 20 L13 30 L4 20 Z" fill="#FF6A2B"/></svg><span style="font-size: 20px">Plumbline</span><span class="mono" style="font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: #A9ADA4; border: 1px solid #33373D; border-radius: 6px; padding: 3px 7px">Workspace</span></a>
+      <div class="row" style="gap: 6px 18px; align-items: center; font-size: 15px">
+        <a href="help.html" style="color: var(--ground); text-decoration: none; padding: 10px 0">Help</a>
+        <a href="roles.html" style="color: var(--ground); text-decoration: none; padding: 10px 0">Open roles</a>
+        <span class="row" style="gap: 8px; align-items: center; color: #C9CBC3" x-show="p"><span aria-hidden="true" style="width: 30px; height: 30px; border-radius: 999px; background: var(--accent); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-weight: 600; font-size: 13px" x-text="first.charAt(0).toUpperCase()"></span><span x-text="p && p.name"></span></span>
+        <button type="button" class="btn btn-sm" style="color: var(--ground); border-color: #4A4F56" @click="PL.signOut()">Log out</button>
+      </div>
+    </nav>
+  </header>
+  <div class="setup-bar" x-show="!PL.configured" x-cloak role="status" x-text="PL.NOT_CONFIGURED"></div>
+
+  <div style="background: #fff; border-bottom: 1px solid var(--line)">
+    <div class="container tabbar" role="tablist" aria-label="Workspace sections">
+      <template x-for="t in tabs" :key="t[0]">
+        <button type="button" role="tab" :aria-selected="tab === t[0]" @click="setTab(t[0]); if (t[0] === 'inbox') markRead()" x-text="t[1]"></button>
+      </template>
+    </div>
+  </div>
+
+  <main class="container" style="padding-block: 32px 96px">
+    <div x-show="loading" class="row" style="align-items: center; gap: 12px"><span class="spinner" aria-hidden="true"></span>Loading your workspace…</div>
+    <p class="alert alert-err" role="alert" style="margin-bottom: 20px" x-show="err && !active" x-text="err" x-cloak></p>
+
+    <div x-show="!loading && p" x-cloak>
+      <div class="alert alert-warn" style="margin-bottom: 18px" x-show="p && !p.completed_at">Your onboarding isn't finished yet. <a href="apply.html">Continue where you left off →</a></div>
+      <div class="alert alert-note" style="margin-bottom: 18px" x-show="p && p.verification === 'pending'">Your identity documents are under review. You can work on tasks now; payouts start once you're verified.</div>
+      <div class="alert alert-err" style="margin-bottom: 18px" x-show="p && p.verification === 'rejected'">We couldn't verify your documents. <a href="apply.html">Upload new ones →</a></div>
+
+      <!-- TASK LIST -->
+      <section x-show="tab === 'tasks' && active === null">
+        <h1 class="h2" style="margin-bottom: 6px" x-text="'Welcome, ' + first + '.'"></h1>
+        <p class="muted" style="margin: 0 0 26px">Pick a task to start. Work as long as you like and stop whenever you need to.</p>
+        <div id="ws-banned" class="alert alert-err" role="alert" style="margin-bottom: 22px" x-show="banned" x-cloak><strong>This account has been banned.</strong> Reason: <span x-text="(p && p.ban_reason) || 'Not given'"></span>. </div>
+        <form id="ws-appeal" class="card stack" style="gap: 10px; margin-bottom: 22px" x-show="banned" x-cloak @submit.prevent="sendAppeal()">
+          <template x-if="appeal && appeal.status === 'open'"><p style="margin: 0"><strong>Appeal received.</strong> Our team will review it and let you know.</p></template>
+          <template x-if="!appeal || appeal.status !== 'open'">
+            <div class="stack" style="gap: 10px">
+              <p class="alert alert-note" x-show="appeal && appeal.status === 'denied'" x-text="'Your last appeal was not successful. ' + ((appeal && appeal.response) || '')"></p>
+              <label class="label" for="ws-appeal-text">Appeal this ban</label>
+              <textarea id="ws-appeal-text" class="input" rows="3" x-model="appealText" placeholder="Tell us why you think this ban is a mistake."></textarea>
+              <div><button type="submit" class="btn btn-sm btn-dark" :disabled="busy">Send appeal</button></div>
+            </div>
+          </template>
+        </form>
+        <section id="ws-projects" style="margin-bottom: 24px" x-show="invitedProjects.length" x-cloak aria-label="Project invitations">
+          <h2 class="h3" style="margin-bottom: 10px">Project invitations</h2>
+          <div class="stack" style="gap: 8px">
+            <template x-for="m in invitedProjects" :key="m">
+              <div class="card row" style="padding: 14px 18px; align-items: center; justify-content: space-between; gap: 8px 16px; border-color: var(--accent)">
+                <div style="min-width: 0"><strong x-text="m"></strong><p class="muted" style="margin: 2px 0 0; font-size: 14px">You've been invited to this project.</p></div>
+                <button type="button" class="btn btn-sm btn-primary" :disabled="joinBusy === m" @click="joinProject(m)" x-text="joinBusy === m ? 'Joining…' : 'Join project'"></button>
+              </div>
+            </template>
+          </div>
+        </section>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 32px">
+          <div class="stat"><p>Submitted</p><p class="num" x-text="done.length"></p></div>
+          <div class="stat"><p>Available now</p><p class="num" x-text="myTasks.filter((t) => !done.includes(t.id)).length"></p></div>
+          <div class="stat"><p>Quality score</p><p class="num" id="ws-quality" x-show="quality" x-text="quality"></p><p style="margin: 6px 0 0; color: var(--ink-2)" x-show="!quality">Shown after your first reviewed tasks</p></div>
+        </div>
+        <div id="ws-invited" class="alert alert-ok row" role="status" style="margin-bottom: 22px; justify-content: space-between; align-items: center" x-show="invitedIndex >= 0"><span>You were invited to the task: <strong x-text="taskName(invited && invited.task_id)"></strong></span><button type="button" class="btn btn-sm btn-dark" @click="start(invitedIndex)">Open task</button></div>
+        <section id="ws-apps" style="margin-bottom: 32px" x-show="apps.length" aria-label="Your applications">
+          <div class="row" style="justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px"><h2 class="h3">Your applications</h2><a href="roles.html" style="font-weight: 600; font-size: 15px">Apply for another role →</a></div>
+          <div class="stack" style="gap: 8px">
+            <template x-for="a in apps" :key="a.role">
+              <div class="card row" style="padding: 14px 18px; align-items: center; justify-content: space-between; gap: 6px 16px">
+                <div style="min-width: 0"><strong x-text="a.role"></strong> <span class="pill" style="padding: 2px 10px; font-size: 12px; background: #F2F2EE; color: var(--ink-2); text-transform: capitalize" x-show="a.status" x-text="a.status"></span><p class="muted" style="margin: 2px 0 0; font-size: 14px" x-text="a.skills.join(', ') || 'No skills chosen yet'"></p></div>
+                <span class="row" style="gap: 12px; align-items: center"><a style="font-size: 14px; font-weight: 600" :href="'job.html?role=' + encodeURIComponent(a.role)" x-text="a.status === 'withdrawn' ? 'Apply again' : 'View role'"></a><button type="button" class="link-btn" style="min-height: 0; font-size: 14px" x-show="a.status === 'submitted' || a.status === 'accepted'" @click="withdraw(a)">Withdraw</button></span>
+              </div>
+            </template>
+          </div>
+        </section>
+        <div class="alert alert-ok row" role="status" style="margin-bottom: 22px; justify-content: space-between; align-items: center" x-show="justSubmitted"><strong>Task submitted for review. Nice work.</strong><button type="button" class="btn btn-sm" style="border-color: var(--ok); color: var(--ok)" @click="justSubmitted = false">Dismiss</button></div>
+        <h2 class="h3" style="font-weight: 700; margin-bottom: 14px">Available tasks</h2>
+        <p id="ws-waiting" class="card muted" style="margin: 0; border: 1px dashed var(--ink)" x-show="!myTasks.length" x-text="waitingText"></p>
+        <div class="stack" style="gap: 12px">
+          <template x-for="(t, i) in tasks" :key="t.id">
+            <article class="card row" style="padding: 20px; align-items: center; justify-content: space-between; gap: 16px" x-show="canDo(t)">
+              <div style="flex: 1 1 360px; min-width: 0">
+                <p class="mono muted" style="margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em" x-text="t.type + ' · ' + t.field"></p>
+                <h3 style="margin: 0 0 4px; font-size: 19px" x-text="t.title"></h3>
+                <p class="muted" style="margin: 0; font-size: 14px" x-text="'About ' + t.mins + ' · ' + money(t.rate_cents) + '/hr'"></p>
+              </div>
+              <button type="button" class="btn btn-primary" x-show="!done.includes(t.id)" @click="start(i)">Start task</button>
+              <span class="pill" style="background: #F2F2EE; color: var(--ink-2)" x-show="done.includes(t.id)" x-text="taskState(t.id)"></span>
+            </article>
+          </template>
+        </div>
+        <section id="ws-work" style="margin-top: 28px" x-show="subs.length" aria-label="Your submitted work">
+          <h2 class="h3" style="font-weight: 700; margin-bottom: 12px">Your submitted work</h2>
+          <div class="stack" style="gap: 8px">
+            <template x-for="s in subs" :key="s.task_id">
+              <div class="card" style="padding: 14px 18px">
+                <div class="row" style="justify-content: space-between; gap: 6px 16px"><strong x-text="taskName(s.task_id) || s.task_id"></strong><span style="text-transform: capitalize; font-size: 14px" x-text="s.status.replace('_', ' ') + (s.status === 'approved' ? ' · ' + money(s.pay_cents) : '')"></span></div>
+                <p class="alert alert-err" style="margin-top: 8px" x-show="s.status === 'rejected'" x-text="'Why it was rejected: ' + (s.review_note || 'No reason given')"></p>
+              </div>
+            </template>
+          </div>
+        </section>
+        <p class="card" style="margin-top: 20px; border: 1px dashed var(--ink)" x-show="myTasks.length && myTasks.every((t) => done.includes(t.id))">You've cleared the queue. New tasks appear as projects open — or <a href="roles.html" class="accent" style="font-weight: 600">apply to more roles</a> to widen your matches.</p>
+      </section>
+
+      <!-- ACTIVE TASK -->
+      <section x-show="tab === 'tasks' && task" x-cloak>
+        <template x-if="task">
+          <div>
+            <div class="row" style="justify-content: space-between; align-items: center; margin-bottom: 20px; gap: 12px">
+              <button type="button" class="btn btn-ghost" @click="active = null">← All tasks</button>
+              <span class="mono muted" style="font-size: 12px; text-transform: uppercase; letter-spacing: .05em" x-text="task.type + ' · ' + task.field + ' · about ' + task.mins"></span>
+            </div>
+            <h1 class="h2" style="font-size: clamp(28px, 3.5vw, 38px); margin-bottom: 8px" x-text="task.title"></h1>
+            <p class="muted" style="margin: 0 0 22px; max-width: 760px">Rate each response for accuracy (1 = wrong, 5 = fully correct), choose the better one, and explain why in at least 40 characters.</p>
+            <div class="card" style="margin-bottom: 16px"><p class="mono muted" style="margin: 0 0 8px; font-size: 12px; text-transform: uppercase">User prompt</p><p style="margin: 0; white-space: pre-wrap" x-text="task.prompt"></p></div>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px">
+              <template x-for="k in ['A', 'B']" :key="k">
+                <div class="card stack" style="border-color: var(--ink); gap: 14px">
+                  <p class="h3" style="font-size: 22px" x-text="'Response ' + k"></p>
+                  <p style="margin: 0; white-space: pre-wrap; flex-grow: 1; color: #2A2E33" x-text="k === 'A' ? task.a : task.b"></p>
+                  <div role="group" :aria-label="'Accuracy rating for response ' + k">
+                    <p style="margin: 0 0 8px; font-size: 13px; font-weight: 600">Accuracy</p>
+                    <div class="row" style="gap: 6px"><template x-for="n in [1,2,3,4,5]" :key="n"><button type="button" class="rate" :aria-pressed="ratings[k] === n" @click="ratings[k] = n; err = ''" x-text="n"></button></template></div>
+                  </div>
+                </div>
+              </template>
+            </div>
+            <div class="card" style="margin-top: 16px">
+              <p style="margin: 0 0 10px; font-weight: 600">Which response is better overall?</p>
+              <div class="chips" role="group" aria-label="Preferred response" style="margin-bottom: 18px"><template x-for="o in [['A','Response A'],['B','Response B'],['tie','About the same']]" :key="o[0]"><button type="button" class="chip" :aria-pressed="pref === o[0]" @click="pref = o[0]; err = ''" x-text="o[1]"></button></template></div>
+              <label for="ws-just" class="label" style="display: block; margin-bottom: 8px">Justification</label>
+              <textarea id="ws-just" class="input" rows="5" x-model="just" placeholder="Point to the specific claims that are right or wrong in each response…"></textarea>
+              <p class="muted" style="margin: 6px 0 0; font-size: 13px" x-text="just.trim().length + ' / 40 characters minimum'"></p>
+              <div class="field" style="margin-top: 16px; max-width: 240px"><label for="ws-mins" class="label">Minutes you worked</label><input id="ws-mins" class="input" type="number" min="1" max="480" x-model="minutes"></div>
+              <p class="alert alert-warn" style="margin-top: 14px" x-show="flagged">Flagged for the project lead. You can still submit your ratings.</p>
+              <p class="alert alert-err" role="alert" style="margin-top: 14px" x-show="err" x-text="err"></p>
+              <div class="row" style="margin-top: 20px; justify-content: space-between; gap: 12px">
+                <div class="row" style="gap: 10px"><button type="button" class="btn btn-sm" style="border-color: var(--line-2)" @click="flagged = !flagged" x-text="flagged ? 'Remove flag' : 'Flag an issue'"></button><button type="button" class="btn btn-sm" style="border-color: var(--line-2)" @click="skip()">Skip task</button></div>
+                <button type="button" class="btn btn-lg btn-primary" @click="submit()" :disabled="busy" x-text="busy ? 'Submitting…' : 'Submit task'"></button>
+              </div>
+            </div>
+          </div>
+        </template>
+      </section>
+
+      <!-- TRAINING -->
+      <section x-show="tab === 'training'" x-cloak>
+        <h1 class="h2" style="margin-bottom: 6px">Training</h1>
+        <p class="muted" style="margin: 0 0 24px">Your core lessons, plus a guide for each task type.</p>
+        <div class="stack" style="gap: 12px">
+          <template x-for="(m, i) in D.MODULES.map((m) => ({ kind: 'Core lesson', title: m.title, body: m.body, core: true })).concat(D.GUIDES)" :key="i">
+            <div class="card" style="padding: 0; overflow: hidden">
+              <button type="button" @click="openGuide = openGuide === i ? -1 : i" :aria-expanded="openGuide === i" style="width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 12px; text-align: left; background: none; border: 0; padding: 16px 18px; min-height: 56px">
+                <span class="stack" style="gap: 2px"><span class="mono muted" style="font-size: 12px; text-transform: uppercase" x-text="m.kind"></span><span style="font-size: 17px; font-weight: 600" x-text="m.title"></span></span>
+                <span style="font-size: 13px; font-weight: 600" :style="(m.core && p && (p.training_done || []).includes(i)) ? 'color:#15803D' : 'color:var(--muted)'" x-text="m.core ? ((p && (p.training_done || []).includes(i)) ? '✓ Complete' : 'Not started') : (openGuide === i ? '−' : '+')"></span>
+              </button>
+              <p x-show="openGuide === i" style="margin: 0; padding: 0 18px 18px; color: var(--ink-2); line-height: 1.6" x-text="m.body"></p>
+            </div>
+          </template>
+        </div>
+      </section>
+
+      <!-- PAYMENTS -->
+      <section x-show="tab === 'payments'" x-cloak>
+        <h1 class="h2" style="margin-bottom: 6px">Payments</h1>
+        <p class="muted" style="margin: 0 0 24px" x-text="'You’re paid for approved working time. ' + D.PAY"></p>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 20px">
+          <div class="stat"><p>Approved, not yet paid</p><p class="num" id="ws-owed" x-text="money(earned - paid)"></p></div>
+          <div class="stat"><p>Paid so far</p><p class="num" x-text="money(paid)"></p></div>
+          <div class="stat"><p>Hours in review</p><p class="num" x-text="reviewHours"></p></div>
+        </div>
+        <div class="row" style="gap: 16px; align-items: flex-start">
+          <div class="card" style="flex: 1 1 320px; min-width: 0">
+            <form class="stack" @submit.prevent="savePayout()">
+              <div class="field"><label class="label" for="ws-payout">Payout method</label><select id="ws-payout" class="input" x-model="payout"><option value="">Select</option><template x-for="o in D.PAYOUTS" :key="o"><option :value="o" x-text="o" :selected="payout === o"></option></template></select></div>
+              <p class="muted" style="margin: 0; font-size: 13px">Account numbers are collected by your payment provider's secure form once you're verified — never on this page or by email.</p>
+              <button type="submit" class="btn btn-dark" style="align-self: flex-start">Save method</button>
+              <p class="alert alert-ok" role="status" x-show="paySaved">✓ Payout method saved.</p>
+            </form>
+          </div>
+          <div class="card" style="flex: 2 1 420px; min-width: 0">
+            <p class="mono muted" style="margin: 0 0 14px; font-size: 12px; text-transform: uppercase">Payout history</p>
+            <div id="ws-payouts" class="stack" style="gap: 8px" x-show="payouts.length">
+              <template x-for="y in payouts" :key="y.id"><div class="row" style="justify-content: space-between; gap: 6px 16px; padding-bottom: 8px; border-bottom: 1px solid var(--line)"><span><strong x-text="money(y.amount_cents)"></strong> <span class="muted" style="font-size: 14px" x-text="[y.method, y.reference].filter(Boolean).join(' · ')"></span></span><span class="muted" style="font-size: 14px" x-text="new Date(y.created_at).toLocaleDateString()"></span></div></template>
+            </div>
+            <div x-show="!payouts.length" style="border: 1px dashed var(--line-2); border-radius: 12px; padding: 28px 20px; text-align: center">
+              <p style="margin: 0 0 6px; font-size: 17px; font-weight: 600">No payouts yet</p>
+              <p class="muted" style="margin: 0 0 16px; font-size: 14px">Payouts appear here once your first hours are approved.</p>
+              <button type="button" class="btn btn-primary" @click="setTab('tasks')">Go to tasks</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- PROFILE -->
+      <section x-show="tab === 'inbox'" x-cloak>
+        <h1 class="h2" style="margin-bottom: 20px">Notifications</h1>
+        <p class="muted" x-show="!notes.length">Updates about your account, projects and pay will appear here.</p>
+        <div id="ws-notes" class="stack" style="gap: 8px; max-width: 760px">
+          <template x-for="n in notes" :key="n.id">
+            <div class="card" style="padding: 14px 18px"><div class="row" style="justify-content: space-between; gap: 6px 16px"><strong x-text="n.title"></strong><span class="muted" style="font-size: 13px" x-text="new Date(n.created_at).toLocaleDateString()"></span></div><p class="muted" style="margin: 4px 0 0; font-size: 14px" x-show="n.body" x-text="n.body"></p></div>
+          </template>
+        </div>
+      </section>
+
+      <section x-show="tab === 'refer'" x-cloak>
+        <h1 class="h2" style="margin-bottom: 6px">Refer &amp; invite</h1>
+        <p class="muted" style="margin: 0 0 24px">Invite a new tutor to Plumbline, a specific project or a specific task. Each link is yours, so you can see how many people joined through it.</p>
+        <form class="card stack" style="max-width: 640px; gap: 14px; margin-bottom: 28px" @submit.prevent="createInvite()">
+          <div class="field"><label class="label" for="inv-role">Project <span class="opt">(optional)</span></label><select id="inv-role" class="input" x-model="inv.role"><option value="">Any project</option><template x-for="r in D.ROLES" :key="r.title"><option :value="r.title" x-text="r.title"></option></template></select></div>
+          <div class="field"><label class="label" for="inv-task">Task <span class="opt">(optional)</span></label><select id="inv-task" class="input" x-model="inv.task"><option value="">Any task</option><template x-for="t in myTasks" :key="t.id"><option :value="t.id" x-text="t.title"></option></template></select></div>
+          <div><button type="submit" id="inv-create" class="btn btn-dark" :disabled="invBusy" x-text="invBusy ? 'Creating…' : 'Create invite link'"></button></div>
+          <p class="alert alert-err" role="alert" x-show="invErr" x-text="invErr"></p>
+        </form>
+        <p class="muted" x-show="!invites.length">Your invite links will appear here.</p>
+        <div id="inv-list" class="stack" style="gap: 10px; max-width: 760px">
+          <template x-for="x in invites" :key="x.code">
+            <article class="card stack" style="gap: 10px; padding: 18px 20px">
+              <div class="row" style="justify-content: space-between; gap: 6px 16px"><strong x-text="inviteTitle(x)"></strong><span class="muted" style="font-size: 14px" x-text="((stats[x.code] && stats[x.code].joined) || 0) + ' joined · ' + ((stats[x.code] && stats[x.code].finished) || 0) + ' finished onboarding'"></span></div>
+              <input class="input inv-link" readonly :value="inviteLink(x)" :aria-label="'Invite link for ' + inviteTitle(x)" @focus="$event.target.select()">
+              <div class="row" style="gap: 8px"><button type="button" class="btn btn-sm" @click="copy(x)" x-text="copied === x.code ? 'Copied ✓' : 'Copy link'"></button><a class="btn btn-sm" target="_blank" rel="noopener" :href="whatsappHref(x)">WhatsApp</a><a class="btn btn-sm" :href="emailHref(x)">Email</a></div>
+            </article>
+          </template>
+        </div>
+      </section>
+
+      <section x-show="tab === 'profile'" x-cloak>
+        <h1 class="h2" style="margin-bottom: 6px">Profile</h1>
+        <p class="muted" style="margin: 0 0 24px">Keep this current so we can match you to the right projects.</p>
+        <form class="card stack" style="max-width: 760px; gap: 18px" @submit.prevent="saveProfile()">
+          <div class="row" style="gap: 18px">
+            <div class="field"><label class="label" for="pf-name">Name</label><input id="pf-name" class="input" type="text" x-model="form.name"><span class="muted" style="font-size: 13px">Changing your legal name sends your identity back for review, and tasks pause until then.</span></div>
+            <div class="field"><label class="label">Email</label><input class="input" type="email" :value="p && p.email" disabled></div>
+            <div class="field"><label class="label" for="pf-field">Primary field</label><select id="pf-field" class="input" x-model="form.field"><option value="">Select</option><template x-for="g in D.FIELD_GROUPS" :key="g[0]"><optgroup :label="g[0]"><template x-for="o in g[1]" :key="o"><option :value="o" x-text="o" :selected="form.field === o"></option></template></optgroup></template></select></div>
+            <div class="field"><label class="label" for="pf-hours">Hours per week</label><select id="pf-hours" class="input" x-model="form.hours"><option value="">Select</option><template x-for="o in D.HOURS" :key="o"><option :value="o" x-text="o" :selected="form.hours === o"></option></template></select></div>
+          </div>
+          <label class="check"><input type="checkbox" x-model="form.paused"><span>Pause new task invites (vacation, exams)</span></label>
+          <div class="row" style="align-items: center; gap: 14px"><button type="submit" class="btn btn-dark">Save changes</button><span role="status" style="font-size: 14px; color: #15803D; font-weight: 600" x-show="profileSaved">✓ Changes saved</span></div>
+        </form>
+        <p class="muted" style="margin: 20px 0 0; font-size: 14px">Need to add fields, languages or redo verification? <a href="apply.html" class="accent" style="font-weight: 600">Review your application</a></p>
+      </section>
+    </div>
+  </main>
+</div>
+</body>
+</html>

@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>For AI labs — Plumbline</title>
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.0/dist/umd/supabase.js"></script>
+<script src="assets/data.js"></script>
+<script src="assets/app.js"></script>
+<script>
+document.addEventListener('alpine:init', () => {
+  Alpine.data('labs', () => ({
+    area: 'Engineering', areas: Object.keys(PL_DATA.LAB_AREAS),
+    form: { name: '', email: '', company: '', type: 'Model evaluation', domain: 'Engineering & code', start: 'As soon as possible', message: '' },
+    busy: false, err: '', ref: '', sentTo: '',
+    labsEmail: PL.cfg.LABS_EMAIL || '',
+    async send() {
+      this.err = '';
+      const f = this.form;
+      if (!f.name.trim() || !f.company.trim()) { this.err = 'Please add your name and company.'; return; }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email.trim())) { this.err = 'Please enter a valid work email.'; return; }
+      if (!f.message.trim()) { this.err = 'Tell us a little about what you need.'; return; }
+      this.busy = true;
+      try {
+        this.ref = await PL.sendMessage('labs', { name: f.name.trim(), email: f.email.trim(), company: f.company.trim(), topic: f.type, message: f.message.trim(), details: { domain: f.domain, start: f.start } });
+        this.sentTo = f.email.trim();
+        f.message = '';
+      } catch (e) { this.err = PL.friendly(e); }
+      this.busy = false;
+    }
+  }));
+});
+</script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
+<style>
+.dark { background: var(--ink); color: var(--ground); }
+.dark .chip { background: transparent; color: var(--ground); border-color: #4A4F56; }
+.dark .chip[aria-pressed="true"] { background: var(--ground); color: var(--ink); border-color: var(--ground); }
+.offer { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1px; background: #2A2E33; border: 1px solid #2A2E33; border-radius: 18px; overflow: hidden; }
+.offer > div { background: var(--ink); padding: 28px; }
+.offer .n { margin: 0 0 18px; font-family: var(--mono); font-size: 13px; color: var(--accent-2); }
+.offer h3 { margin: 0 0 10px; font-size: 21px; }
+.offer p:last-child { margin: 0; color: #C9CBC3; }
+</style>
+</head>
+<body id="top">
+<header id="site-header" data-active="labs"></header>
+<main x-data="labs">
+  <div class="dark">
+    <section class="container" style="padding-block: 96px 80px">
+      <p class="eyebrow" style="color: #A9ADA4">Plumbline for AI labs</p>
+      <h1 class="h1" style="font-size: clamp(44px, 7.5vw, 104px); max-width: 1000px">Expert data that holds <span style="color: var(--accent-2)">plumb</span>.</h1>
+      <p style="margin: 28px 0 36px; font-size: 20px; color: #C9CBC3; max-width: 640px">Evaluation, preference and red-team data from verified domain experts — matched to your project, trained on your rubric, and quality-checked before delivery.</p>
+      <div class="row" style="gap: 12px"><a class="btn btn-lg btn-orange" href="#talk">Start a project</a><a class="btn btn-lg" style="color: var(--ground); border-color: var(--ground)" href="#offer">See what we deliver</a></div>
+    </section>
+
+    <section id="offer" class="section" style="border-top: 1px solid #2A2E33">
+      <div class="container">
+        <h2 class="h2" style="margin-bottom: 36px">What we deliver</h2>
+        <div class="offer">
+          <div><p class="n">01</p><h3>Model evaluation</h3><p>Expert grading of model outputs against your rubric, with written rationales you can audit.</p></div>
+          <div><p class="n">02</p><h3>Preference data</h3><p>Pairwise and ranked comparisons for fine-tuning, collected from people who know the domain.</p></div>
+          <div><p class="n">03</p><h3>Red-teaming</h3><p>Specialists probe for unsafe, wrong or misleading behavior in high-stakes fields.</p></div>
+          <div><p class="n">04</p><h3>Custom datasets</h3><p>Expert-written problems, solutions and reference answers built to your spec.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="coverage" class="section" style="border-top: 1px solid #2A2E33">
+      <div class="container">
+        <h2 class="h2" style="margin-bottom: 10px">Fields we cover</h2>
+        <p style="margin: 0 0 28px; font-size: 17px; color: #C9CBC3">Pick an area to see example specialties.</p>
+        <div class="chips" role="group" aria-label="Field areas" style="margin-bottom: 22px"><template x-for="a in areas" :key="a"><button type="button" class="chip" :aria-pressed="area === a" @click="area = a" x-text="a"></button></template></div>
+        <div class="row" style="gap: 10px" aria-live="polite"><template x-for="s in PL_DATA.LAB_AREAS[area]" :key="s"><span class="mono" style="font-size: 14px; padding: 10px 14px; border: 1px dashed #4A4F56; border-radius: 8px; color: #E9EAE4" x-text="s"></span></template></div>
+      </div>
+    </section>
+
+    <section id="process" class="section" style="border-top: 1px solid #2A2E33">
+      <div class="container">
+        <h2 class="h2" style="margin-bottom: 36px">From brief to delivery</h2>
+        <ol style="list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 24px">
+          <li style="border-top: 2px solid var(--ground); padding-top: 18px"><p class="mono" style="margin: 0 0 6px; font-size: 13px; color: var(--accent-2)">SCOPE</p><p style="margin: 0; color: #C9CBC3">We agree the task design, rubric, volume and quality bar with your team.</p></li>
+          <li style="border-top: 2px solid var(--ground); padding-top: 18px"><p class="mono" style="margin: 0 0 6px; font-size: 13px; color: var(--accent-2)">MATCH</p><p style="margin: 0; color: #C9CBC3">We staff verified fellows whose credentials fit the work.</p></li>
+          <li style="border-top: 2px solid var(--ground); padding-top: 18px"><p class="mono" style="margin: 0 0 6px; font-size: 13px; color: var(--accent-2)">CALIBRATE</p><p style="margin: 0; color: #C9CBC3">A pilot batch aligns fellows to your rubric before full production.</p></li>
+          <li style="border-top: 2px solid var(--ground); padding-top: 18px"><p class="mono" style="margin: 0 0 6px; font-size: 13px; color: var(--accent-2)">DELIVER</p><p style="margin: 0; color: #C9CBC3">Reviewed data ships in your format, with rationales and agreement metrics.</p></li>
+        </ol>
+      </div>
+    </section>
+  </div>
+
+  <section id="talk" class="section">
+    <div class="container row" style="gap: 48px">
+      <div style="flex: 1 1 340px; min-width: 0">
+        <h2 class="h2" style="margin-bottom: 14px">Tell us about your project.</h2>
+        <p class="lead" style="margin: 0">We'll reply with a scoping call and a pilot plan.<span x-show="labsEmail" x-text="' Prefer email? Write to ' + labsEmail + '.'"></span></p>
+      </div>
+      <div class="card-hard" style="flex: 1 1 480px; min-width: 0; padding: 28px">
+        <form x-show="!ref" class="row" style="gap: 16px" @submit.prevent="send()" novalidate>
+          <div class="field" style="flex-basis: 220px"><label class="label" for="lb-name">Your name</label><input id="lb-name" class="input" type="text" autocomplete="name" x-model="form.name"></div>
+          <div class="field" style="flex-basis: 220px"><label class="label" for="lb-email">Work email</label><input id="lb-email" class="input" type="email" autocomplete="email" x-model="form.email"></div>
+          <div class="field" style="flex-basis: 220px"><label class="label" for="lb-co">Company</label><input id="lb-co" class="input" type="text" autocomplete="organization" x-model="form.company"></div>
+          <div class="field" style="flex-basis: 220px"><label class="label" for="lb-type">Project type</label><select id="lb-type" class="input" x-model="form.type"><option>Model evaluation</option><option>Preference data</option><option>Red-teaming</option><option>Custom dataset</option><option>Not sure yet</option></select></div>
+          <div class="field" style="flex-basis: 220px"><label class="label" for="lb-field">Main domain</label><select id="lb-field" class="input" x-model="form.domain"><option>Engineering &amp; code</option><option>Sciences</option><option>Math</option><option>Health</option><option>Law</option><option>Finance &amp; business</option><option>Languages</option><option>Humanities</option><option>Multiple</option></select></div>
+          <div class="field" style="flex-basis: 220px"><label class="label" for="lb-when">Start date</label><select id="lb-when" class="input" x-model="form.start"><option>As soon as possible</option><option>Within a month</option><option>This quarter</option><option>Exploring</option></select></div>
+          <div class="field" style="flex-basis: 100%"><label class="label" for="lb-msg">What do you need?</label><textarea id="lb-msg" class="input" rows="4" maxlength="5000" x-model="form.message"></textarea></div>
+          <button type="submit" class="btn btn-lg btn-dark" :disabled="busy" x-text="busy ? 'Sending…' : 'Request a scoping call'"></button>
+          <p class="alert alert-err" role="alert" style="flex-basis: 100%" x-show="err" x-text="err"></p>
+        </form>
+        <div x-show="ref" x-cloak role="status">
+          <h3 class="h3" style="font-weight: 700; font-size: 30px; margin-bottom: 10px">Request sent.</h3>
+          <p style="margin: 0 0 18px; color: var(--ink-2)">Your reference is <strong style="color: var(--ink)" x-text="ref"></strong>. We'll reply to <strong style="color: var(--ink)" x-text="sentTo"></strong> to set up a scoping call.</p>
+          <button type="button" class="btn btn-dark" @click="ref = ''">Send another</button>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+<footer id="site-footer"></footer>
+</body>
+</html>

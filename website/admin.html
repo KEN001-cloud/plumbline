@@ -1,0 +1,550 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Admin — Plumbline</title>
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.0/dist/umd/supabase.js"></script>
+<script src="assets/data.js"></script>
+<script src="assets/app.js"></script>
+<script>
+document.addEventListener('alpine:init', () => {
+  Alpine.data('admin', () => ({
+    tasks: [], links: [], payouts: [], appeals: [], payRefs: {}, stages: ['new', 'contacted', 'proposal', 'won', 'lost'],
+    taskForm: { id: '', title: '', type: 'Ranking responses', field: '', mins: '15 min', rate: '', prompt: '', a: '', b: '', active: true, projects: [] },
+    apps: [], invites: [], members: [], projTarget: '', banReason: '', banNote: '',
+    banReasons: ['Low quality work', 'Policy violation', 'Fraud or fake identity', 'Other'],
+    state: 'loading',            // loading | denied | ready
+    me: '', tab: 'applicants', err: '', toast: '',
+    people: [], subs: [], msgs: [],
+    vFilter: 'pending', q: '', selected: null, sFilter: 'in_review', mFilter: 'new',
+    async init() {
+      if (!PL.configured) { this.err = PL.NOT_CONFIGURED; this.state = 'denied'; return; }
+      const s = await PL.requireAuth('admin.html');
+      if (!s) return;
+      this.me = s.user.email;
+      const { data, error } = await PL.sb.rpc('is_admin');
+      if (error || !data) { this.state = 'denied'; return; }
+      await this.loadAll();
+      this.state = 'ready';
+    },
+    async loadAll() {
+      this.err = '';
+      try {
+        const [p, t, m] = await Promise.all([
+          PL.sb.from('profiles').select('*').order('created_at', { ascending: false }),
+          PL.sb.from('task_submissions').select('*').order('created_at', { ascending: false }),
+          PL.sb.from('messages').select('*').order('created_at', { ascending: false })
+        ]);
+        for (const r of [p, t, m]) if (r.error) throw r.error;
+        this.people = p.data || []; this.subs = t.data || []; this.msgs = m.data || [];
+        const a = await PL.sb.from('applications').select('id, user_id, role, skills, status').order('created_at');
+        const ok = (r) => (r.error ? [] : (r.data || []));
+        const [k, l, y, ap] = await Promise.all([
+          PL.sb.from('tasks').select('*').order('created_at'),
+          PL.sb.from('task_projects').select('*'),
+          PL.sb.from('payouts').select('*').order('created_at', { ascending: false }),
+          PL.sb.from('appeals').select('*').order('created_at', { ascending: false })
+        ]);
+        this.tasks = ok(k); this.links = ok(l); this.payouts = ok(y); this.appeals = ok(ap);
+        this.apps = a.error ? [] : (a.data || []);
+        const v = await PL.sb.from('invites').select('code, inviter_id, role, task_id');
+        this.invites = v.error ? [] : (v.data || []);
+        const pm = await PL.sb.from('project_members').select('user_id, project, status');
+        this.members = pm.error ? [] : (pm.data || []);
+        if (this.selected) this.selected = this.people.find((x) => x.id === this.selected.id) || null;
+      } catch (e) { this.err = PL.friendly(e); }
+    },
+    flash(msg) { this.toast = msg; clearTimeout(this._t); this._t = setTimeout(() => { this.toast = ''; }, 2500); },
+    fmt(d) { return d ? new Date(d).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '—'; },
+    taskTitle(id) { const t = this.tasks.find((x) => x.id === id); return t ? t.title : id; },
+    money(c) { return '$' + ((c || 0) / 100).toFixed(2); },
+    safeLink(u) { return /^https?:\/\//i.test(u || '') ? u : ''; },
+    appsFor(p) { return this.apps.filter((a) => a.user_id === p.id); },
+    async decide(a, status) {
+      const { error } = await PL.sb.from('applications').update({ status }).eq('id', a.id);
+      if (error) { this.err = PL.friendly(error); return; }
+      a.status = status;
+      const p = this.people.find((x) => x.id === a.user_id);
+      if (status === 'accepted' && !this.members.some((m) => m.user_id === a.user_id && m.project === a.role)) {
+        const row = { user_id: a.user_id, project: a.role };
+        const r = await PL.sb.from('project_members').insert(row);
+        if (r.error) { this.err = PL.friendly(r.error); return; }
+        this.members = this.members.concat([Object.assign(row, { status: 'invited' })]);
+      }
+      this.flash(a.role + ': ' + status + (p ? ' for ' + (p.name || p.email) : '') + '.');
+    },
+    async deleteIdFiles(p) {
+      const paths = [p.id_front_path, p.selfie_path].filter(Boolean);
+      if (!paths.length) return;
+      const { error } = await PL.sb.storage.from('fellow-files').remove(paths);
+      if (error) { this.err = PL.friendly(error); return; }
+      const r = await PL.sb.from('profiles').update({ id_front_path: null, selfie_path: null }).eq('id', p.id);
+      if (r.error) { this.err = PL.friendly(r.error); return; }
+      p.id_front_path = null; p.selfie_path = null; this.flash('ID files deleted.');
+    },
+    editTask(t) {
+      this.taskForm = Object.assign({}, t, { rate: t.rate_cents / 100, projects: this.links.filter((l) => l.task_id === t.id).map((l) => l.project) });
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    },
+    newTask() { this.taskForm = { id: '', title: '', type: 'Ranking responses', field: '', mins: '15 min', rate: '', prompt: '', a: '', b: '', active: true, projects: [] }; },
+    async saveTask() {
+      const f = this.taskForm;
+      if (![f.title, f.field, f.prompt, f.a, f.b].every((x) => String(x || '').trim()) || !(Number(f.rate) >= 0) || f.rate === '') { this.err = 'Fill in the title, field, rate, prompt and both responses.'; return; }
+      if (!f.projects.length) { this.err = 'Choose at least one project for this task.'; return; }
+      this.err = '';
+      const id = f.id || f.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) + '-' + Date.now().toString(36);
+      const row = { id, title: f.title.trim(), type: f.type, field: f.field.trim(), mins: f.mins, rate_cents: Math.round(Number(f.rate) * 100), prompt: f.prompt, a: f.a, b: f.b, active: f.active };
+      const { error } = await PL.sb.from('tasks').upsert(row);
+      if (error) { this.err = PL.friendly(error); return; }
+      const d = await PL.sb.from('task_projects').delete().eq('task_id', id);
+      if (d.error) { this.err = PL.friendly(d.error); return; }
+      const i = await PL.sb.from('task_projects').insert(f.projects.map((project) => ({ task_id: id, project })));
+      if (i.error) { this.err = PL.friendly(i.error); return; }
+      this.newTask(); await this.loadAll(); this.flash('Task saved.');
+    },
+    get owed() {
+      const by = {};
+      this.subs.filter((s) => s.status === 'approved' && !s.payout_id).forEach((s) => {
+        const o = by[s.user_id] = by[s.user_id] || { user_id: s.user_id, cents: 0, mins: 0 };
+        o.cents += s.pay_cents || 0; o.mins += s.approved_minutes || 0;
+      });
+      return Object.values(by).filter((o) => o.cents > 0);
+    },
+    payMethod(id) { const p = this.people.find((x) => x.id === id); return (p && p.payout) || 'No method chosen'; },
+    async recordPayout(o) {
+      const ref = (this.payRefs[o.user_id] || '').trim();
+      if (!ref) { this.err = 'Enter the payment reference from your provider.'; return; }
+      this.err = '';
+      const { error } = await PL.sb.rpc('record_payout', { p_user: o.user_id, p_reference: ref });
+      if (error) { this.err = PL.friendly(error); return; }
+      delete this.payRefs[o.user_id]; await this.loadAll(); this.flash('Payout recorded.');
+    },
+    async decideAppeal(a, status) {
+      if (status === 'denied' && !(a._reply || '').trim()) { this.err = 'Add a reply explaining the decision.'; return; }
+      this.err = '';
+      const { error } = await PL.sb.from('appeals').update({ status, response: (a._reply || '').trim() || null }).eq('id', a.id);
+      if (error) { this.err = PL.friendly(error); return; }
+      await this.loadAll(); this.flash('Appeal ' + status + '.');
+    },
+    get labs() { return this.msgs.filter((m) => m.kind === 'labs'); },
+    async setPipeline(m, v) {
+      const { error } = await PL.sb.from('messages').update({ pipeline: v }).eq('id', m.id);
+      if (error) { this.err = PL.friendly(error); return; }
+      m.pipeline = v; this.flash('Stage updated.');
+    },
+    invitedBy(p) {
+      const i = this.invites.find((x) => x.code === p.invite_code);
+      if (!i) return '—';
+      return [this.personName(i.inviter_id), i.role, i.task_id && this.taskTitle(i.task_id)].filter(Boolean).join(' · ');
+    },
+    appliedFor(p) {
+      const rows = this.apps.filter((a) => a.user_id === p.id).map((a) => a.role + ' (' + a.skills.join(', ') + ')');
+      if (p.role && !this.apps.some((a) => a.user_id === p.id && a.role === p.role)) rows.unshift(p.role);
+      return rows.join(' · ') || 'Any';
+    },
+    personName(id) { const p = this.people.find((x) => x.id === id); return p ? (p.name || p.email) : id.slice(0, 8); },
+    count(v) { return this.people.filter((p) => v === 'all' || p.verification === v).length; },
+    get filteredPeople() {
+      const ql = this.q.trim().toLowerCase();
+      return this.people.filter((p) => (this.vFilter === 'all' || p.verification === this.vFilter)
+        && (!ql || [p.name, p.email, p.field, p.country, p.role].join(' ').toLowerCase().includes(ql)));
+    },
+    get filteredSubs() { return this.subs.filter((s) => this.sFilter === 'all' || s.status === this.sFilter); },
+    get filteredMsgs() { return this.msgs.filter((m) => this.mFilter === 'all' || m.status === this.mFilter); },
+    stage(p) { return p.completed_at ? 'Onboarded' : 'Step ' + ((p.step || 0) + 1) + ' of 8'; },
+    async openFile(path) {
+      if (!path) return;
+      const { data, error } = await PL.sb.storage.from('fellow-files').createSignedUrl(path, 120);
+      if (error) { this.err = PL.friendly(error); return; }
+      window.open(data.signedUrl, '_blank', 'noopener');
+    },
+    async setVerification(p, v) {
+      const { error } = await PL.sb.from('profiles').update({ verification: v }).eq('id', p.id);
+      if (error) { this.err = PL.friendly(error); return; }
+      p.verification = v; this.flash((p.name || p.email) + ' marked ' + v + '.');
+    },
+    memberships(p) { return this.members.filter((m) => m.user_id === p.id); },
+    projectOptions(p) {
+      const applied = this.apps.filter((a) => a.user_id === p.id).map((a) => a.role).concat(p.role ? [p.role] : []);
+      const rest = PL_DATA.ROLES.map((r) => r.title).filter((t) => !applied.includes(t));
+      return [...new Set(applied)].concat(rest).filter((t) => !this.memberships(p).some((m) => m.project === t));
+    },
+    quality(p) {
+      const mine = this.subs.filter((s) => s.user_id === p.id);
+      const n = (v) => mine.filter((s) => s.status === v).length;
+      return n('approved') + ' approved · ' + n('rejected') + ' rejected · ' + n('in_review') + ' in review';
+    },
+    async inviteToProject(p) {
+      if (!this.projTarget) { this.err = 'Choose a project first.'; return; }
+      const row = { user_id: p.id, project: this.projTarget };
+      const { error } = await PL.sb.from('project_members').insert(row);
+      if (error) { this.err = PL.friendly(error); return; }
+      this.members = this.members.concat([Object.assign(row, { status: 'invited' })]);
+      this.projTarget = ''; this.flash((p.name || p.email) + ' invited to ' + row.project + '.');
+    },
+    async resetQuiz(p) {
+      const { error } = await PL.sb.from('profiles').update({ quiz_attempts: 0 }).eq('id', p.id);
+      if (error) { this.err = PL.friendly(error); return; }
+      p.quiz_attempts = 0; this.flash('Skills check attempts reset.');
+    },
+    async ban(p) {
+      if (!this.banReason) { this.err = 'Choose a reason for the ban.'; return; }
+      const reason = this.banReason + (this.banNote.trim() ? ': ' + this.banNote.trim() : '');
+      const patch = { banned_at: new Date().toISOString(), ban_reason: reason };
+      const { error } = await PL.sb.from('profiles').update(patch).eq('id', p.id);
+      if (error) { this.err = PL.friendly(error); return; }
+      Object.assign(p, patch); this.banReason = ''; this.banNote = ''; this.flash((p.name || p.email) + ' banned.');
+    },
+    async unban(p) {
+      const patch = { banned_at: null, ban_reason: null };
+      const { error } = await PL.sb.from('profiles').update(patch).eq('id', p.id);
+      if (error) { this.err = PL.friendly(error); return; }
+      Object.assign(p, patch); this.flash((p.name || p.email) + ' unbanned.');
+    },
+    async setSub(s, status) {
+      if (status === 'rejected' && !(s._note || '').trim()) { this.err = 'Tell the fellow why this work was rejected.'; return; }
+      this.err = '';
+      const patch = { status };
+      if (status === 'rejected') patch.review_note = s._note.trim();
+      if (status === 'approved' && s._mins !== undefined && s._mins !== '') patch.approved_minutes = Number(s._mins);
+      const { error } = await PL.sb.from('task_submissions').update(patch).eq('id', s.id);
+      if (error) { this.err = PL.friendly(error); return; }
+      await this.loadAll(); this.flash('Submission ' + status + '.');
+    },
+    async setMsg(m, status) {
+      const { error } = await PL.sb.from('messages').update({ status }).eq('id', m.id);
+      if (error) { this.err = PL.friendly(error); return; }
+      m.status = status; this.flash(m.ref + ' marked ' + status + '.');
+    },
+    exportCsv() {
+      const cols = ['name', 'email', 'country', 'applications', 'field', 'edu', 'years', 'langs', 'hours', 'tz', 'verification', 'quiz_score', 'payout', 'completed_at', 'created_at'];
+      const esc = (v) => {
+        const t = String(Array.isArray(v) ? v.join('; ') : (v ?? ''));
+        return '"' + (/^[=+\-@\t\r]/.test(t) ? "'" : '') + t.replace(/"/g, '""') + '"';
+      };
+      const csv = [cols.join(',')].concat(this.filteredPeople.map((p) => cols.map((c) => esc(c === 'applications' ? this.appliedFor(p) : p[c])).join(','))).join('\n');
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+      a.download = 'plumbline-applicants.csv'; a.click();
+    }
+  }));
+});
+</script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
+<style>
+.tbl { width: 100%; border-collapse: collapse; font-size: 14px; background: #fff; }
+.tbl th { text-align: left; font-family: var(--mono); font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); font-weight: 500; padding: 10px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.tbl td { padding: 12px; border-bottom: 1px solid #EEEEEA; vertical-align: top; }
+.tbl tr.sel td { background: var(--accent-soft); }
+.tbl-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; }
+.badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.b-pending, .b-in_review, .b-new { background: var(--warn-bg); color: var(--warn); }
+.b-verified, .b-approved, .b-handled { background: var(--ok-bg); color: var(--ok); }
+.b-rejected, .b-lost { background: var(--err-bg); color: var(--err); }
+.b-not_submitted { background: #F2F2EE; color: var(--muted); }
+.tabbar { display: flex; flex-wrap: wrap; gap: 4px; }
+.tabbar button { background: none; border: 0; border-bottom: 3px solid transparent; padding: 16px 14px 13px; font-size: 15px; color: var(--muted); min-height: 52px; }
+.tabbar button[aria-selected="true"] { border-bottom-color: var(--accent); color: var(--ink); font-weight: 600; }
+dl.kv { display: grid; grid-template-columns: 130px 1fr; gap: 8px 12px; margin: 0; font-size: 14px; }
+dl.kv dt { color: var(--muted); }
+dl.kv dd { margin: 0; overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<div x-data="admin">
+  <header style="background: var(--ink); color: var(--ground)">
+    <nav class="container row" style="padding-block: 12px; align-items: center; justify-content: space-between; gap: 12px" aria-label="Admin">
+      <a class="brand" href="index.html" style="color: var(--ground)"><svg width="22" height="26" viewBox="0 0 26 30" aria-hidden="true"><line x1="13" y1="0" x2="13" y2="12" stroke="#F7F7F4" stroke-width="2"/><path d="M13 12 L22 20 L13 30 L4 20 Z" fill="#FF6A2B"/></svg><span style="font-size: 20px">Plumbline</span><span class="mono" style="font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: #A9ADA4; border: 1px solid #33373D; border-radius: 6px; padding: 3px 7px">Admin</span></a>
+      <div class="row" style="gap: 8px 16px; align-items: center"><span style="color: #C9CBC3; font-size: 14px" x-text="me"></span><button type="button" class="btn btn-sm" style="color: var(--ground); border-color: #4A4F56" @click="PL.signOut()">Log out</button></div>
+    </nav>
+  </header>
+
+  <main class="container" style="padding-block: 32px 96px">
+    <div x-show="state === 'loading'" class="row" style="gap: 12px; align-items: center"><span class="spinner" aria-hidden="true"></span>Checking access…</div>
+
+    <div x-show="state === 'denied'" x-cloak class="card" style="max-width: 560px">
+      <h1 class="h3" style="font-weight: 700; margin-bottom: 8px">Admins only</h1>
+      <p class="muted" style="margin: 0 0 16px" x-text="err || 'This account isn’t on the admin list. Add your user id to the admins table (see README), then reload.'"></p>
+      <a class="btn" href="index.html">Back to the site</a>
+    </div>
+
+    <div x-show="state === 'ready'" x-cloak>
+      <div class="row" style="justify-content: space-between; align-items: flex-end; gap: 16px; margin-bottom: 20px">
+        <div><p class="eyebrow">Team dashboard</p><h1 class="h2">Admin</h1></div>
+        <button type="button" class="btn" @click="loadAll(); flash('Refreshed.')">Refresh</button>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px">
+        <div class="card"><p class="mono muted" style="margin: 0; font-size: 12px">APPLICANTS</p><p style="margin: 4px 0 0; font-family: var(--display); font-size: 34px" x-text="people.length"></p></div>
+        <div class="card"><p class="mono muted" style="margin: 0; font-size: 12px">ID REVIEWS WAITING</p><p style="margin: 4px 0 0; font-family: var(--display); font-size: 34px" x-text="count('pending')"></p></div>
+        <div class="card"><p class="mono muted" style="margin: 0; font-size: 12px">TASKS TO REVIEW</p><p style="margin: 4px 0 0; font-family: var(--display); font-size: 34px" x-text="subs.filter((s) => s.status === 'in_review').length"></p></div>
+        <div class="card"><p class="mono muted" style="margin: 0; font-size: 12px">NEW MESSAGES</p><p style="margin: 4px 0 0; font-family: var(--display); font-size: 34px" x-text="msgs.filter((m) => m.status === 'new').length"></p></div>
+      </div>
+      <p class="alert alert-err" role="alert" style="margin-bottom: 16px" x-show="err" x-text="err"></p>
+      <p class="alert alert-ok" role="status" style="position: fixed; right: 20px; bottom: 20px; z-index: 50; box-shadow: 0 6px 24px rgba(0,0,0,.12)" x-show="toast" x-text="toast"></p>
+
+      <div class="tabbar" role="tablist" style="border-bottom: 1px solid var(--line); margin-bottom: 20px">
+        <button type="button" role="tab" :aria-selected="tab === 'applicants'" @click="tab = 'applicants'">Applicants</button>
+        <button type="button" role="tab" :aria-selected="tab === 'subs'" @click="tab = 'subs'">Task submissions</button>
+        <button type="button" role="tab" :aria-selected="tab === 'msgs'" @click="tab = 'msgs'">Messages</button>
+        <button type="button" role="tab" :aria-selected="tab === 'tasks'" @click="tab = 'tasks'">Tasks</button>
+        <button type="button" role="tab" :aria-selected="tab === 'pay'" @click="tab = 'pay'">Payments</button>
+        <button type="button" role="tab" :aria-selected="tab === 'appeals'" @click="tab = 'appeals'" x-text="'Appeals' + (appeals.filter((a) => a.status === 'open').length ? ' (' + appeals.filter((a) => a.status === 'open').length + ')' : '')"></button>
+        <button type="button" role="tab" :aria-selected="tab === 'labs'" @click="tab = 'labs'">Labs</button>
+      </div>
+
+      <!-- APPLICANTS -->
+      <section x-show="tab === 'applicants'">
+        <div class="row" style="gap: 12px; align-items: flex-end; margin-bottom: 14px">
+          <div class="chips" role="group" aria-label="Verification status">
+            <template x-for="v in [['pending','ID review'],['not_submitted','No ID yet'],['verified','Verified'],['rejected','Rejected'],['all','All']]" :key="v[0]">
+              <button type="button" class="chip" :aria-pressed="vFilter === v[0]" @click="vFilter = v[0]"><span x-text="v[1]"></span><span class="count" x-text="count(v[0])"></span></button>
+            </template>
+          </div>
+          <div class="field" style="flex: 1 1 220px"><label class="sr-only" for="ad-q">Search applicants</label><input id="ad-q" class="input" type="search" placeholder="Search name, email, field, country…" x-model="q"></div>
+          <button type="button" class="btn" @click="exportCsv()">Export CSV</button>
+        </div>
+        <div class="row" style="gap: 20px; align-items: flex-start">
+          <div class="tbl-wrap" style="flex: 2 1 560px; min-width: 0">
+            <table class="tbl">
+              <thead><tr><th>Name</th><th>Field</th><th>Country</th><th>Progress</th><th>ID</th><th>Joined</th></tr></thead>
+              <tbody>
+                <template x-for="p in filteredPeople" :key="p.id">
+                  <tr :class="selected && selected.id === p.id ? 'sel' : ''">
+                    <td><button type="button" class="link-btn" style="min-height: 0; text-align: left" @click="selected = p" x-text="p.name || '(no name)'"></button><div class="muted" style="font-size: 12px" x-text="p.email"></div></td>
+                    <td x-text="p.field || '—'"></td>
+                    <td x-text="p.country || '—'"></td>
+                    <td x-text="stage(p)"></td>
+                    <td><span class="badge" :class="'b-' + p.verification" x-text="p.verification.replace('_', ' ')"></span></td>
+                    <td class="muted" x-text="fmt(p.created_at)"></td>
+                  </tr>
+                </template>
+                <tr x-show="!filteredPeople.length"><td colspan="6" class="muted" style="text-align: center; padding: 28px">No applicants here.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <aside class="card" style="flex: 1 1 320px; min-width: 0" x-show="selected">
+            <template x-if="selected">
+              <div>
+                <div class="row" style="justify-content: space-between; align-items: flex-start; gap: 8px">
+                  <div><h2 class="h3" style="font-weight: 700" x-text="selected.name || '(no name)'"></h2><p class="muted" style="margin: 2px 0 0; font-size: 14px" x-text="selected.email"></p></div>
+                  <button type="button" class="btn btn-sm btn-ghost" @click="selected = null" aria-label="Close details">✕</button>
+                </div>
+                <div class="row" style="gap: 8px; margin: 16px 0">
+                  <button type="button" class="btn btn-sm" :disabled="!selected.id_front_path" @click="openFile(selected.id_front_path)">View ID</button>
+                  <button type="button" class="btn btn-sm" :disabled="!selected.selfie_path" @click="openFile(selected.selfie_path)">View selfie</button>
+                  <button type="button" class="btn btn-sm" :disabled="!selected.resume_path" @click="openFile(selected.resume_path)">View CV</button>
+                  <button type="button" id="ad-del-id" class="btn btn-sm" style="border-color: var(--err); color: var(--err)" :disabled="!selected.id_front_path && !selected.selfie_path" @click="deleteIdFiles(selected)">Delete ID files</button>
+                </div>
+                <div class="row" style="gap: 8px; margin-bottom: 18px">
+                  <button type="button" class="btn btn-sm btn-primary" @click="setVerification(selected, 'verified')" :disabled="selected.verification === 'verified'">Verify identity</button>
+                  <button type="button" class="btn btn-sm" style="border-color: var(--err); color: var(--err)" @click="setVerification(selected, 'rejected')" :disabled="selected.verification === 'rejected'">Reject</button>
+                </div>
+                <p id="ad-banned" class="alert alert-err" style="margin-bottom: 14px" x-show="selected.banned_at"><strong>Banned.</strong> <span x-text="selected.ban_reason"></span></p>
+                <div class="stack" style="gap: 8px; margin-bottom: 18px">
+                  <label class="label" for="ad-project">Invite to a project</label>
+                  <p class="muted" style="margin: 0; font-size: 14px" x-show="selected.verification !== 'verified' || selected.banned_at">Only verified people who aren't banned can be invited.</p>
+                  <select id="ad-project" class="input" x-model="projTarget" :disabled="selected.verification !== 'verified' || !!selected.banned_at"><option value="">Choose a project</option><template x-for="t in projectOptions(selected)" :key="t"><option :value="t" x-text="t"></option></template></select>
+                  <div><button type="button" id="ad-invite" class="btn btn-sm btn-dark" :disabled="selected.verification !== 'verified' || !!selected.banned_at" @click="inviteToProject(selected)">Send invitation</button></div>
+                  <p style="margin: 0; font-size: 14px; color: var(--ink-2)" x-show="memberships(selected).length" x-text="'Projects: ' + memberships(selected).map((m) => m.project + ' (' + m.status + ')').join(' · ')"></p>
+                </div>
+                <div id="ad-apps" class="stack" style="gap: 8px; margin-bottom: 18px" x-show="appsFor(selected).length">
+                  <p class="label" style="margin: 0">Applications</p>
+                  <template x-for="a in appsFor(selected)" :key="a.id">
+                    <div class="row" style="justify-content: space-between; align-items: center; gap: 6px 10px; font-size: 14px">
+                      <span style="min-width: 0"><strong x-text="a.role"></strong> · <span x-text="a.status"></span></span>
+                      <span class="row" style="gap: 6px" x-show="a.status === 'submitted'"><button type="button" class="btn btn-sm btn-primary" :disabled="selected.verification !== 'verified'" @click="decide(a, 'accepted')">Accept</button><button type="button" class="btn btn-sm" @click="decide(a, 'rejected')">Reject</button></span>
+                    </div>
+                  </template>
+                  <p class="muted" style="margin: 0; font-size: 13px" x-show="selected.verification !== 'verified'">Accepting needs a verified identity. Accepting also sends the project invitation.</p>
+                </div>
+                <dl class="kv">
+                  <dt>Task quality</dt><dd x-text="quality(selected)"></dd>
+                  <dt>Status</dt><dd><span class="badge" :class="'b-' + selected.verification" x-text="selected.verification.replace('_', ' ')"></span> · <span x-text="stage(selected)"></span></dd>
+                  <dt>Applied for</dt><dd x-text="appliedFor(selected)"></dd>
+                  <dt>Invited by</dt><dd x-text="invitedBy(selected)"></dd>
+                  <dt>Primary field</dt><dd x-text="selected.field || '—'"></dd>
+                  <dt>Other fields</dt><dd x-text="(selected.other_fields || []).join(', ') || '—'"></dd>
+                  <dt>Education</dt><dd x-text="[selected.edu, selected.subject].filter(Boolean).join(' · ') || '—'"></dd>
+                  <dt>Experience</dt><dd x-text="selected.years || '—'"></dd>
+                  <dt>Languages</dt><dd x-text="(selected.langs || []).join(', ')"></dd>
+                  <dt>Country</dt><dd x-text="selected.country || '—'"></dd>
+                  <dt>Work auth.</dt><dd x-text="selected.work_auth || '—'"></dd>
+                  <dt>Availability</dt><dd x-text="[selected.hours, selected.tz].filter(Boolean).join(' · ') || '—'"></dd>
+                  <dt>Task types</dt><dd x-text="(selected.task_types || []).join(', ') || '—'"></dd>
+                  <dt>Skills check</dt><dd><span x-text="(selected.quiz_score == null ? '—' : selected.quiz_score + ' of 3') + ' · ' + (selected.quiz_attempts || 0) + ' of 5 attempts'"></span> <button type="button" id="ad-quiz-reset" class="link-btn" style="min-height: 0" x-show="(selected.quiz_attempts || 0) >= 5" @click="resetQuiz(selected)">Reset</button></dd>
+                  <dt>Training</dt><dd x-text="(selected.training_done || []).length + ' of 4 lessons'"></dd>
+                  <dt>Signed</dt><dd x-text="selected.signed_name ? selected.signed_name + ' · ' + fmt(selected.signed_at) : '—'"></dd>
+                  <dt>Payout</dt><dd x-text="selected.payout || '—'"></dd>
+                  <dt>Link</dt><dd><a x-show="safeLink(selected.link)" :href="safeLink(selected.link)" target="_blank" rel="noopener" x-text="selected.link"></a><span x-show="!safeLink(selected.link)" x-text="selected.link || '—'"></span></dd>
+                  <dt>Invites</dt><dd x-text="selected.paused ? 'Paused' : 'Active'"></dd>
+                </dl>
+                <div class="stack" style="gap: 8px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line)">
+                  <template x-if="!selected.banned_at">
+                    <div class="stack" style="gap: 8px">
+                      <label class="label" for="ad-ban-reason">Ban this person</label>
+                      <select id="ad-ban-reason" class="input" x-model="banReason"><option value="">Choose a reason</option><template x-for="b in banReasons" :key="b"><option :value="b" x-text="b"></option></template></select>
+                      <input class="input" x-model="banNote" placeholder="Details they will see (optional)" aria-label="Ban details">
+                      <div><button type="button" id="ad-ban" class="btn btn-sm" style="border-color: var(--err); color: var(--err)" @click="ban(selected)">Ban user</button></div>
+                    </div>
+                  </template>
+                  <div x-show="selected.banned_at"><button type="button" id="ad-unban" class="btn btn-sm" @click="unban(selected)">Remove ban</button></div>
+                </div>
+              </div>
+            </template>
+          </aside>
+        </div>
+      </section>
+
+      <!-- SUBMISSIONS -->
+      <section x-show="tab === 'subs'" x-cloak>
+        <div class="chips" role="group" aria-label="Submission status" style="margin-bottom: 14px">
+          <template x-for="v in [['in_review','In review'],['approved','Approved'],['rejected','Rejected'],['all','All']]" :key="v[0]"><button type="button" class="chip" :aria-pressed="sFilter === v[0]" @click="sFilter = v[0]" x-text="v[1]"></button></template>
+        </div>
+        <div class="stack" style="gap: 12px">
+          <template x-for="s in filteredSubs" :key="s.id">
+            <article class="card">
+              <div class="row" style="justify-content: space-between; gap: 12px; align-items: flex-start">
+                <div><p class="mono muted" style="margin: 0 0 4px; font-size: 12px" x-text="fmt(s.created_at) + ' · ' + personName(s.user_id)"></p><h3 style="margin: 0; font-size: 18px" x-text="taskTitle(s.task_id)"></h3></div>
+                <span class="badge" :class="'b-' + s.status" x-text="s.status.replace('_', ' ')"></span>
+              </div>
+              <p style="margin: 12px 0 8px; font-size: 14px">Accuracy A <strong x-text="s.rating_a"></strong> · B <strong x-text="s.rating_b"></strong> · Preferred <strong x-text="s.preferred"></strong><span x-show="s.flagged" class="badge b-rejected" style="margin-left: 8px">Flagged</span></p>
+              <p style="margin: 0 0 14px; color: var(--ink-2); white-space: pre-wrap" x-text="s.justification"></p>
+              <p class="muted" style="margin: -6px 0 12px; font-size: 14px" x-text="'Reported ' + (s.minutes || 0) + ' min' + (s.status === 'approved' ? ' · Approved ' + (s.approved_minutes || 0) + ' min · ' + money(s.pay_cents) + (s.payout_id ? ' · Paid' : ' · Not yet paid') : '')"></p>
+              <p class="alert alert-err" style="margin-bottom: 12px" x-show="s.status === 'rejected'" x-text="'Rejected: ' + (s.review_note || '')"></p>
+              <div class="row" style="gap: 8px; margin-bottom: 10px" x-show="s.status === 'in_review'">
+                <input class="input ad-mins" type="number" min="0" max="480" style="flex: 0 1 170px" :placeholder="'Approved minutes (' + (s.minutes || 0) + ')'" aria-label="Approved minutes" x-model="s._mins">
+                <input class="input ad-note" style="flex: 1 1 240px" placeholder="Reason, if rejecting" aria-label="Reason for rejecting" x-model="s._note">
+              </div>
+              <div class="row" style="gap: 8px"><button type="button" class="btn btn-sm btn-primary" @click="setSub(s, 'approved')" :disabled="s.status !== 'in_review'">Approve</button><button type="button" class="btn btn-sm" @click="setSub(s, 'rejected')" :disabled="s.status !== 'in_review'">Reject</button></div>
+            </article>
+          </template>
+          <p class="card muted" style="text-align: center" x-show="!filteredSubs.length">Nothing here.</p>
+        </div>
+      </section>
+
+      <!-- MESSAGES -->
+      <section x-show="tab === 'msgs'" x-cloak>
+        <div class="chips" role="group" aria-label="Message status" style="margin-bottom: 14px">
+          <template x-for="v in [['new','New'],['handled','Handled'],['all','All']]" :key="v[0]"><button type="button" class="chip" :aria-pressed="mFilter === v[0]" @click="mFilter = v[0]" x-text="v[1]"></button></template>
+        </div>
+        <div class="stack" style="gap: 12px">
+          <template x-for="m in filteredMsgs" :key="m.id">
+            <article class="card">
+              <div class="row" style="justify-content: space-between; gap: 12px; align-items: flex-start">
+                <div><p class="mono muted" style="margin: 0 0 4px; font-size: 12px" x-text="m.ref + ' · ' + (m.kind === 'labs' ? 'Labs request' : 'Support') + ' · ' + fmt(m.created_at)"></p>
+                  <h3 style="margin: 0; font-size: 18px" x-text="m.name + (m.company ? ' — ' + m.company : '')"></h3>
+                  <p class="muted" style="margin: 2px 0 0; font-size: 14px" x-text="m.email + (m.topic ? ' · ' + m.topic : '')"></p></div>
+                <span class="badge" :class="'b-' + m.status" x-text="m.status"></span>
+              </div>
+              <p style="margin: 12px 0 14px; color: var(--ink-2); white-space: pre-wrap" x-text="m.message"></p>
+              <p class="muted" style="margin: -6px 0 14px; font-size: 13px" x-show="m.details && Object.keys(m.details).length" x-text="Object.entries(m.details || {}).map((e) => e[0] + ': ' + e[1]).join(' · ')"></p>
+              <div class="row" style="gap: 8px">
+                <a class="btn btn-sm btn-dark" :href="'mailto:' + m.email + '?subject=' + encodeURIComponent('Re: ' + m.ref)">Reply by email</a>
+                <button type="button" class="btn btn-sm" x-show="m.status !== 'handled'" @click="setMsg(m, 'handled')">Mark handled</button>
+                <button type="button" class="btn btn-sm" x-show="m.status === 'handled'" @click="setMsg(m, 'new')">Reopen</button>
+              </div>
+            </article>
+          </template>
+          <p class="card muted" style="text-align: center" x-show="!filteredMsgs.length">No messages here.</p>
+        </div>
+      </section>
+
+      <!-- TASKS -->
+      <section x-show="tab === 'tasks'" x-cloak>
+        <form class="card stack" style="gap: 12px; margin-bottom: 20px" @submit.prevent="saveTask()">
+          <h2 class="h3" x-text="taskForm.id ? 'Edit task' : 'Add a task'"></h2>
+          <div class="row" style="gap: 12px">
+            <div class="field"><label class="label" for="tk-title">Title</label><input id="tk-title" class="input" x-model="taskForm.title"></div>
+            <div class="field"><label class="label" for="tk-type">Type</label><select id="tk-type" class="input" x-model="taskForm.type"><template x-for="o in PL_DATA.TASK_TYPES" :key="o"><option :value="o" x-text="o"></option></template></select></div>
+          </div>
+          <div class="row" style="gap: 12px">
+            <div class="field"><label class="label" for="tk-field">Field</label><input id="tk-field" class="input" x-model="taskForm.field"></div>
+            <div class="field"><label class="label" for="tk-mins">Expected time</label><input id="tk-mins" class="input" x-model="taskForm.mins"></div>
+            <div class="field"><label class="label" for="tk-rate">Hourly rate ($)</label><input id="tk-rate" class="input" type="number" min="0" step="0.01" x-model="taskForm.rate"></div>
+          </div>
+          <div class="field"><label class="label" for="tk-prompt">User prompt</label><textarea id="tk-prompt" class="input" rows="3" x-model="taskForm.prompt"></textarea></div>
+          <div class="row" style="gap: 12px">
+            <div class="field"><label class="label" for="tk-a">Response A</label><textarea id="tk-a" class="input" rows="3" x-model="taskForm.a"></textarea></div>
+            <div class="field"><label class="label" for="tk-b">Response B</label><textarea id="tk-b" class="input" rows="3" x-model="taskForm.b"></textarea></div>
+          </div>
+          <div class="field"><label class="label" for="tk-projects">Projects <span class="opt">(hold Ctrl to choose several)</span></label><select id="tk-projects" class="input" multiple size="6" x-model="taskForm.projects"><template x-for="r in PL_DATA.ROLES" :key="r.title"><option :value="r.title" x-text="r.title"></option></template></select></div>
+          <label class="check"><input type="checkbox" x-model="taskForm.active"><span>Open for fellows</span></label>
+          <div class="row" style="gap: 8px"><button type="submit" id="tk-save" class="btn btn-dark">Save task</button><button type="button" class="btn" x-show="taskForm.id" @click="newTask()">Cancel</button></div>
+        </form>
+        <div class="stack" style="gap: 8px">
+          <template x-for="t in tasks" :key="t.id">
+            <div class="card row" style="padding: 14px 18px; align-items: center; justify-content: space-between; gap: 8px 16px">
+              <div style="min-width: 0"><strong x-text="t.title"></strong><p class="muted" style="margin: 2px 0 0; font-size: 14px" x-text="money(t.rate_cents) + '/hr · ' + (t.active ? 'Open' : 'Closed') + ' · ' + (links.filter((l) => l.task_id === t.id).map((l) => l.project).join(', ') || 'No project')"></p></div>
+              <button type="button" class="btn btn-sm" @click="editTask(t)">Edit</button>
+            </div>
+          </template>
+        </div>
+      </section>
+
+      <!-- PAYMENTS -->
+      <section x-show="tab === 'pay'" x-cloak>
+        <p class="alert alert-note" style="margin-bottom: 16px">Pay people through your payment provider first, then record the reference here. This page records payouts. It doesn't send money.</p>
+        <h2 class="h3" style="margin-bottom: 10px">Owed now</h2>
+        <div class="stack" style="gap: 8px; margin-bottom: 24px">
+          <template x-for="o in owed" :key="o.user_id">
+            <div class="card row ad-owed" style="padding: 14px 18px; align-items: center; justify-content: space-between; gap: 8px 16px">
+              <div style="min-width: 0"><strong x-text="personName(o.user_id)"></strong><p class="muted" style="margin: 2px 0 0; font-size: 14px" x-text="money(o.cents) + ' · ' + (o.mins / 60).toFixed(1) + ' hours · ' + payMethod(o.user_id)"></p></div>
+              <span class="row" style="gap: 8px"><input class="input ad-ref" style="width: 200px" placeholder="Payment reference" aria-label="Payment reference" x-model="payRefs[o.user_id]"><button type="button" class="btn btn-sm btn-dark" @click="recordPayout(o)">Record payout</button></span>
+            </div>
+          </template>
+          <p class="card muted" style="text-align: center" x-show="!owed.length">Nothing is owed right now.</p>
+        </div>
+        <h2 class="h3" style="margin-bottom: 10px">Payout history</h2>
+        <div class="stack" style="gap: 8px">
+          <template x-for="y in payouts" :key="y.id"><div class="card row" style="padding: 12px 18px; justify-content: space-between; gap: 6px 16px; font-size: 14px"><span><strong x-text="money(y.amount_cents)"></strong> · <span x-text="personName(y.user_id)"></span></span><span class="muted" x-text="[y.method, y.reference, fmt(y.created_at)].filter(Boolean).join(' · ')"></span></div></template>
+          <p class="muted" x-show="!payouts.length">No payouts recorded yet.</p>
+        </div>
+      </section>
+
+      <!-- APPEALS -->
+      <section x-show="tab === 'appeals'" x-cloak>
+        <div class="stack" style="gap: 12px">
+          <template x-for="a in appeals" :key="a.id">
+            <article class="card ad-appeal">
+              <div class="row" style="justify-content: space-between; gap: 12px"><div><h3 style="margin: 0; font-size: 18px" x-text="personName(a.user_id)"></h3><p class="muted" style="margin: 2px 0 0; font-size: 13px" x-text="fmt(a.created_at)"></p></div><span class="badge" :class="a.status === 'open' ? 'b-new' : (a.status === 'upheld' ? 'b-approved' : 'b-rejected')" x-text="a.status"></span></div>
+              <p style="margin: 12px 0; color: var(--ink-2); white-space: pre-wrap" x-text="a.message"></p>
+              <template x-if="a.status === 'open'">
+                <div class="stack" style="gap: 8px">
+                  <input class="input" placeholder="Reply to the fellow (needed if you deny)" aria-label="Reply" x-model="a._reply">
+                  <div class="row" style="gap: 8px"><button type="button" class="btn btn-sm btn-primary" @click="decideAppeal(a, 'upheld')">Uphold and remove ban</button><button type="button" class="btn btn-sm" @click="decideAppeal(a, 'denied')">Deny</button></div>
+                </div>
+              </template>
+              <p class="muted" style="margin: 0; font-size: 14px" x-show="a.response" x-text="'Reply: ' + a.response"></p>
+            </article>
+          </template>
+          <p class="card muted" style="text-align: center" x-show="!appeals.length">No appeals.</p>
+        </div>
+      </section>
+
+      <!-- LABS -->
+      <section x-show="tab === 'labs'" x-cloak>
+        <div class="stack" style="gap: 12px">
+          <template x-for="m in labs" :key="m.id">
+            <article class="card ad-lab">
+              <div class="row" style="justify-content: space-between; align-items: flex-start; gap: 12px">
+                <div style="min-width: 0"><p class="mono muted" style="margin: 0 0 4px; font-size: 12px" x-text="m.ref + ' · ' + fmt(m.created_at)"></p><h3 style="margin: 0; font-size: 18px" x-text="(m.company || m.name) + (m.topic ? ' · ' + m.topic : '')"></h3><p class="muted" style="margin: 2px 0 0; font-size: 14px" x-text="m.name + ' · ' + m.email"></p></div>
+                <div class="field" style="flex: 0 1 170px"><label class="sr-only" :for="'lab-' + m.id">Stage</label><select :id="'lab-' + m.id" class="input" :value="m.pipeline || 'new'" @change="setPipeline(m, $event.target.value)"><template x-for="v in stages" :key="v"><option :value="v" :selected="(m.pipeline || 'new') === v" x-text="v.charAt(0).toUpperCase() + v.slice(1)"></option></template></select></div>
+              </div>
+              <p style="margin: 12px 0 0; color: var(--ink-2); white-space: pre-wrap" x-text="m.message"></p>
+            </article>
+          </template>
+          <p class="card muted" style="text-align: center" x-show="!labs.length">No project requests yet. They arrive from the For AI labs page.</p>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+</body>
+</html>

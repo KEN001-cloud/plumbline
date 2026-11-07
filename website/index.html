@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plumbline — Get paid to teach AI what you know</title>
+<meta name="description" content="Plumbline pays students, professionals and researchers to check, correct and teach frontier AI models. Remote, part-time, paid hourly.">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.0/dist/umd/supabase.js"></script>
+<script src="assets/data.js"></script>
+<script src="assets/app.js"></script>
+<script>
+document.addEventListener('alpine:init', () => {
+  Alpine.data('home', () => ({
+    demo: '',
+    filter: 'All',
+    openFaq: 0,
+    marquee: PL_DATA.MARQUEE.concat(PL_DATA.MARQUEE),
+    faqs: PL_DATA.HOME_FAQ,
+    areas: ['All', 'Engineering', 'Science', 'Medicine', 'Law', 'Finance', 'Math', 'Languages', 'Humanities'],
+    get roles() {
+      const featured = PL_DATA.ROLES.filter((r) => PL_DATA.FEATURED.includes(r.title));
+      return this.filter === 'All' ? featured : featured.filter((r) => r.field === this.filter);
+    },
+    applyHref(r) { return 'job.html?role=' + encodeURIComponent(r.title); }
+  }));
+});
+</script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
+<style>
+.hero-rule { background-image: repeating-linear-gradient(to bottom, var(--line) 0, var(--line) 1px, transparent 1px, transparent 24px); background-size: 14px 100%; background-repeat: no-repeat; }
+.demo-opt { text-align: left; background: var(--ground); border: 1px solid var(--line-2); border-radius: 12px; padding: 14px 16px; font-size: 14px; line-height: 1.45; min-height: 44px; }
+.demo-opt[aria-pressed="true"] { border: 2px solid var(--accent); background: var(--accent-soft); }
+.why-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
+.why-grid > div { padding: 28px; background: var(--paper); border: 1px solid var(--line-2); border-radius: 16px; }
+.why-glyph { font-family: var(--display); font-size: 48px; line-height: 1; color: var(--accent); }
+.steps { list-style: none; margin: 0; padding: 0 0 0 40px; border-left: 2px solid var(--ink); }
+.steps li { position: relative; padding-bottom: 44px; }
+.steps li:last-child { padding-bottom: 0; }
+.steps li::before { content: ''; position: absolute; left: -50px; top: 4px; width: 16px; height: 16px; background: var(--ink); transform: rotate(45deg); }
+.steps li:first-child::before { background: var(--accent); }
+</style>
+</head>
+<body id="top">
+<header id="site-header"></header>
+
+<main x-data="home">
+  <!-- HERO -->
+  <section class="hero-rule" aria-labelledby="hero-title">
+    <div class="container row" style="padding-block: 72px 88px; gap: 56px; align-items: center">
+      <div style="flex: 1 1 520px; min-width: 0">
+        <p class="eyebrow">The Plumbline Fellowship · Remote · Part-time · Paid hourly</p>
+        <h1 id="hero-title" class="h1" style="font-size: clamp(44px, 7vw, 92px)">Your expertise is the <span class="accent">answer key</span>.</h1>
+        <p class="lead" style="margin-top: 28px; font-size: 20px">Plumbline pays students, professionals and researchers to check, correct and teach frontier AI models. No AI background needed — just the thing you already know well.</p>
+        <div class="row" style="margin-top: 36px; gap: 12px">
+          <a class="btn btn-lg btn-primary" href="apply.html">Apply now →</a>
+          <a class="btn btn-lg" href="#roles">Browse open roles</a>
+        </div>
+        <div class="row mono muted" style="margin-top: 44px; gap: 28px; font-size: 13px">
+          <span><span class="accent">●</span> Work in short sessions</span>
+          <span><span class="accent">●</span> Paid for every hour worked</span>
+          <span><span class="accent">●</span> Credentials for your CV</span>
+        </div>
+      </div>
+      <div style="flex: 1 1 400px; min-width: 0; position: relative; padding-top: 40px">
+        <div aria-hidden="true" style="position: absolute; right: 36px; top: -72px; width: 24px; height: 112px; transform-origin: 12px 0; animation: pl-sway 4.5s ease-in-out infinite; z-index: 2">
+          <div style="width: 2px; height: 92px; background: var(--ink); margin: 0 auto"></div>
+          <div style="width: 16px; height: 16px; background: var(--accent); transform: rotate(45deg); margin: -4px auto 0"></div>
+        </div>
+        <div class="card-hard" style="padding: 0; overflow: hidden">
+          <div class="mono muted" style="display: flex; justify-content: space-between; padding: 14px 20px; border-bottom: 1px solid var(--line); font-size: 12px; letter-spacing: .05em; text-transform: uppercase"><span>Try a task</span><span>Rust · Code review</span></div>
+          <div style="padding: 20px">
+            <p style="margin: 0 0 12px; font-size: 15px; color: var(--ink-2)">A user asks why this won't compile:</p>
+            <pre style="margin: 0; background: var(--ink); color: #E9EAE4; border-radius: 12px; padding: 16px; font-family: var(--mono); font-size: 13px; line-height: 1.6; overflow-x: auto">let s = String::from("hi");
+takes(s);
+println!("{}", s);</pre>
+            <p style="margin: 18px 0 10px; font-weight: 600; font-size: 15px">Which model response is more accurate?</p>
+            <div class="stack" style="gap: 10px">
+              <button type="button" class="demo-opt" :aria-pressed="demo === 'A'" @click="demo = 'A'"><strong class="mono">A</strong> — <code>s</code> is moved into <code>takes()</code>, then used again. Pass <code>&amp;s</code> or clone it.</button>
+              <button type="button" class="demo-opt" :aria-pressed="demo === 'B'" @click="demo = 'B'"><strong class="mono">B</strong> — Rust doesn't allow strings as function arguments. Use a char array instead.</button>
+            </div>
+            <div aria-live="polite">
+              <p class="alert alert-ok" style="margin-top: 14px" x-show="demo === 'A'" x-cloak><strong>Right.</strong> A names the real cause — a move, then a reuse. That call is the job.</p>
+              <p class="alert alert-err" style="margin-top: 14px" x-show="demo === 'B'" x-cloak><strong>Not quite.</strong> B invents a rule that doesn't exist. Catching that is exactly what fellows do.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- MARQUEE -->
+  <div aria-label="Fields we hire for" style="background: var(--ink); color: var(--ground); overflow: hidden">
+    <div style="display: flex; width: max-content; animation: pl-marquee 40s linear infinite; font-family: var(--mono); font-size: 14px; letter-spacing: .05em; text-transform: uppercase">
+      <template x-for="(m, i) in marquee" :key="i"><span style="padding: 16px 22px; white-space: nowrap"><span x-text="m"></span> <span style="color: var(--accent-2)">/</span></span></template>
+    </div>
+  </div>
+
+  <!-- ROLES -->
+  <section id="roles" class="section" aria-labelledby="roles-title">
+    <div class="container">
+      <div class="row" style="justify-content: space-between; align-items: flex-end; margin-bottom: 36px">
+        <div><p class="eyebrow">01 — Open roles</p><h2 id="roles-title" class="h2">Find work that fits what you know.</h2></div>
+        <div class="chips" role="group" aria-label="Filter roles by field">
+          <template x-for="a in areas" :key="a"><button type="button" class="chip" :aria-pressed="filter === a" @click="filter = a" x-text="a"></button></template>
+        </div>
+      </div>
+      <div class="role-grid">
+        <template x-for="r in roles" :key="r.title">
+          <article class="role-card">
+            <h3 class="role-title" x-text="r.title"></h3>
+            <p class="role-rate" x-text="'Up to $' + r.rate + '/hr'"></p>
+            <p class="role-rate" x-text="r.needed + ' people needed'"></p>
+            <div class="role-foot">
+              <p class="role-levels" x-text="r.levels"></p>
+              <a class="role-apply" :href="applyHref(r)" :aria-label="'Apply for ' + r.title">Apply</a>
+            </div>
+          </article>
+        </template>
+        <a class="role-card role-all" href="roles.html">View all opportunities →</a>
+      </div>
+      <p style="margin: 28px 0 0; color: var(--ink-2)">Don't see your field? <a href="apply.html" class="accent" style="font-weight: 600">Apply anyway</a> — we match new projects every week.</p>
+    </div>
+  </section>
+
+  <!-- WHY -->
+  <section id="why" class="section" style="background: #fff; border-top: 1px solid var(--line)" aria-labelledby="why-title">
+    <div class="container">
+      <p class="eyebrow">02 — Why Plumbline</p>
+      <h2 id="why-title" class="h2" style="margin-bottom: 56px; max-width: 760px">Flexible work that takes your knowledge seriously.</h2>
+      <div class="why-grid">
+        <div><div class="why-glyph" aria-hidden="true">↘</div><h3 class="h3" style="margin: 24px 0 10px">Anywhere, any hour</h3><p class="muted" style="margin: 0">Remote, part-time work you pick up between classes, shifts or lab runs. Log on for an hour, log off when life calls.</p></div>
+        <div><div class="why-glyph" aria-hidden="true">$</div><h3 class="h3" style="margin: 24px 0 10px">Paid for judgment</h3><p class="muted" style="margin: 0">Hourly rates set by the depth of the expertise a project needs — not by how fast you can click.</p></div>
+        <div><div class="why-glyph" aria-hidden="true">+</div><h3 class="h3" style="margin: 24px 0 10px">Skills that compound</h3><p class="muted" style="margin: 0">Learn how modern models are evaluated and trained, and earn credentials you can put on a CV.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- HOW -->
+  <section id="how" class="section" style="border-top: 1px solid var(--line)" aria-labelledby="how-title">
+    <div class="container row" style="gap: 56px">
+      <div style="flex: 1 1 340px; min-width: 0">
+        <p class="eyebrow">03 — How it works</p>
+        <h2 id="how-title" class="h2" style="margin-bottom: 20px">Four steps, straight down.</h2>
+        <p class="muted" style="margin: 0 0 28px; font-size: 17px; max-width: 420px">A plumb line finds true vertical. Our process is just as direct: apply once, get matched, learn the project, start contributing.</p>
+        <div class="card" style="border: 1px dashed var(--ink); max-width: 420px; font-size: 14px; color: var(--ink-2)"><strong style="color: var(--ink)">Eligibility.</strong> <span x-text="PL_DATA.ELIG"></span></div>
+      </div>
+      <ol class="steps" style="flex: 1 1 480px; min-width: 0">
+        <li><p class="mono muted" style="margin: 0 0 6px; font-size: 13px">STEP 01</p><h3 class="h3" style="font-weight: 700; margin-bottom: 8px">Apply and verify your identity</h3><p class="muted" style="margin: 0 0 8px">Tell us your field and education, then confirm who you are.</p><a href="apply.html" class="accent" style="font-weight: 600">Start now →</a></li>
+        <li><p class="mono muted" style="margin: 0 0 6px; font-size: 13px">STEP 02</p><h3 class="h3" style="font-weight: 700; margin-bottom: 8px">Get matched to a project</h3><p class="muted" style="margin: 0">We pair you with work that needs exactly your background.</p></li>
+        <li><p class="mono muted" style="margin: 0 0 6px; font-size: 13px">STEP 03</p><h3 class="h3" style="font-weight: 700; margin-bottom: 8px">Take the training</h3><p class="muted" style="margin: 0">Short, project-specific guides show you what good looks like.</p></li>
+        <li><p class="mono muted" style="margin: 0 0 6px; font-size: 13px">STEP 04</p><h3 class="h3" style="font-weight: 700; margin-bottom: 8px">Contribute and get paid</h3><p class="muted" style="margin: 0">Review, write and correct model outputs on your own schedule.</p></li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- LABS -->
+  <section id="labs" class="section" style="background: var(--ink); color: var(--ground)" aria-labelledby="labs-title">
+    <div class="container row" style="align-items: flex-end; justify-content: space-between; gap: 40px">
+      <div style="flex: 1 1 560px; min-width: 0">
+        <p class="eyebrow" style="color: #A9ADA4">04 — For AI labs</p>
+        <h2 id="labs-title" class="h2" style="margin-bottom: 20px">Need expert data that holds up?</h2>
+        <p style="margin: 0; font-size: 18px; color: #C9CBC3; max-width: 600px">Plumbline matches evaluation, red-teaming and training projects with vetted domain experts — from organic chemistry to corporate finance.</p>
+      </div>
+      <a class="btn btn-lg btn-orange" href="labs.html">Talk to our team</a>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section id="faq" class="section" aria-labelledby="faq-title">
+    <div class="container row" style="gap: 48px">
+      <div style="flex: 1 1 300px; min-width: 0">
+        <p class="eyebrow">05 — FAQ</p>
+        <h2 id="faq-title" class="h2" style="margin-bottom: 16px">Questions, answered.</h2>
+        <p class="muted" style="margin: 0">More in the <a href="help.html" class="accent" style="font-weight: 600">help center</a>.</p>
+      </div>
+      <div style="flex: 2 1 560px; min-width: 0; border-bottom: 1px solid var(--ink)">
+        <template x-for="(f, i) in faqs" :key="i">
+          <div class="acc-item">
+            <button type="button" class="acc-btn" :aria-expanded="openFaq === i" @click="openFaq = openFaq === i ? -1 : i">
+              <span class="acc-q" x-text="f.q"></span><span class="acc-sign" aria-hidden="true" x-text="openFaq === i ? '−' : '+'"></span>
+            </button>
+            <p class="acc-a" x-show="openFaq === i" x-text="f.a"></p>
+          </div>
+        </template>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="section" style="background: var(--accent); color: #fff; text-align: center">
+    <div class="container">
+      <h2 class="h1" style="margin: 0 auto 20px; max-width: 900px">Put what you know to work.</h2>
+      <p style="margin: 0 auto 36px; font-size: 19px; max-width: 560px; color: #E6E6FF">Join a growing community of fellows shaping how AI reasons in their field.</p>
+      <a class="btn btn-lg btn-light" href="apply.html">Join the fellowship</a>
+    </div>
+  </section>
+</main>
+
+<footer id="site-footer"></footer>
+</body>
+</html>

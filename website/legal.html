@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Legal — Plumbline</title>
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.0/dist/umd/supabase.js"></script>
+<script src="assets/data.js"></script>
+<script src="assets/app.js"></script>
+<script>
+document.addEventListener('alpine:init', () => {
+  Alpine.data('legal', () => ({
+    docs: PL_DATA.LEGAL,
+    cur: 'terms',
+    init() {
+      const read = () => { const h = location.hash.slice(1); if (this.docs.some((d) => d.key === h)) this.cur = h; };
+      read(); window.addEventListener('hashchange', read);
+    },
+    pick(k) { this.cur = k; history.replaceState(null, '', '#' + k); },
+    get doc() { return this.docs.find((d) => d.key === this.cur); }
+  }));
+});
+</script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
+</head>
+<body id="top">
+<header id="site-header"></header>
+<main x-data="legal" class="container" style="max-width: 1000px; padding-block: 56px 96px">
+  <p class="eyebrow">Legal</p>
+  <h1 class="h1" style="font-size: clamp(38px, 5.5vw, 60px); margin-bottom: 28px">The fine print, kept plain.</h1>
+  <div class="chips" role="tablist" aria-label="Legal documents" style="margin-bottom: 28px">
+    <template x-for="d in docs" :key="d.key"><button type="button" class="chip" role="tab" :aria-selected="cur === d.key" :aria-pressed="cur === d.key" @click="pick(d.key)" x-text="d.title"></button></template>
+  </div>
+  <article role="tabpanel" class="card-hard" style="box-shadow: none">
+    <h2 class="h3" style="font-weight: 700; font-size: 34px; margin-bottom: 6px" x-text="doc.title"></h2>
+    <p class="mono muted" style="margin: 0 0 28px; font-size: 13px">Last updated: 6 November 2026 · Draft</p>
+    <template x-for="s in doc.sections" :key="s[0]">
+      <section style="padding: 20px 0; border-top: 1px solid #EEEEEA"><h3 style="margin: 0 0 8px; font-size: 19px" x-text="s[0]"></h3><p style="margin: 0; color: var(--ink-2); line-height: 1.65" x-text="s[1]"></p></section>
+    </template>
+    <p class="card" style="margin: 20px 0 0; border: 1px dashed var(--ink); font-size: 14px">Draft wording. Have it reviewed by a lawyer in each country you operate in before launch.</p>
+  </article>
+  <p style="margin: 24px 0 0; color: var(--ink-2)">Questions about these terms? <a href="help.html#contact" class="accent" style="font-weight: 600">Contact us</a>.</p>
+</main>
+<footer id="site-footer"></footer>
+</body>
+</html>

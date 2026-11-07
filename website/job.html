@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Job details — Plumbline</title>
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.0/dist/umd/supabase.js"></script>
+<script src="assets/data.js"></script>
+<script src="assets/jobs.js"></script>
+<script src="assets/app.js"></script>
+<script>
+document.addEventListener('alpine:init', () => {
+  Alpine.data('job', () => ({
+    PAY: PL_DATA.PAY, ELIG: PL_DATA.ELIG,
+    r: null, jd: null,
+    loading: true, busy: false, err: '', done: false,
+    signedIn: false, profile: null, apps: [], picked: [], invite: null,
+    faqs: PL_DATA.HOME_FAQ, openFaq: -1, moreOpen: false,
+    gain: ['AI model evaluation', 'Analytical thinking', 'Prompt writing', 'Quality review', 'AI literacy'],
+    email: '', password: '', emailStep: true,
+
+    async init() {
+      const title = new URLSearchParams(location.search).get('role') || '';
+      this.r = PL_DATA.ROLES.find((x) => x.title === title) || null;
+      if (this.r) {
+        this.jd = PL_JOBS.build(this.r);
+        document.title = this.r.title + ' — Plumbline';
+        try {
+          const inv = await PL.invite();
+          if (inv && (inv.role === this.r.title || !inv.role)) this.invite = inv;
+          if (await PL.session()) {
+            this.signedIn = true;
+            await this.loadMine();
+          }
+        } catch (e) { this.err = PL.friendly(e); }
+      }
+      this.loading = false;
+    },
+
+    get signupHref() { return 'apply.html?role=' + encodeURIComponent(this.r.title) + (this.email.trim() ? '&email=' + encodeURIComponent(this.email.trim()) : ''); },
+    get loginHref() { return 'login.html?next=' + encodeURIComponent('job.html?role=' + encodeURIComponent(this.r.title)); },
+    get inviteText() {
+      if (!this.invite) return '';
+      return this.invite.task_title ? 'You were invited to the task: ' + this.invite.task_title + '.' : 'You were invited to this project.';
+    },
+    get allApplied() {
+      const list = this.apps.map((a) => a.role);
+      const first = this.profile && this.profile.role;
+      return first && !list.includes(first) ? [first].concat(list) : list;
+    },
+    get onThisRole() { return this.allApplied.includes(this.r.title); },
+    get otherApplied() { return this.allApplied.filter((t) => t !== this.r.title); },
+
+    async loadMine() {
+      this.profile = await PL.profile();
+      const { data, error } = await PL.sb.from('applications').select('role, skills, status').eq('user_id', this.profile.id);
+      this.apps = error ? [] : (data || []).filter((a) => a.status !== 'withdrawn');
+      const mine = this.apps.find((a) => a.role === this.r.title);
+      if (mine) this.picked = this.jd.skills.filter((s) => mine.skills.includes(s));
+    },
+
+    continueEmail() {
+      this.err = '';
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(this.email.trim())) { this.err = 'Please enter a valid email address.'; return; }
+      this.emailStep = false;
+    },
+
+    async logIn() {
+      this.err = '';
+      if (!PL.configured) { this.err = PL.NOT_CONFIGURED; return; }
+      if (!this.password) { this.err = 'Please enter your password.'; return; }
+      this.busy = true;
+      try {
+        const { error } = await PL.sb.auth.signInWithPassword({ email: this.email.trim(), password: this.password });
+        if (error) throw error;
+        this.password = ''; this.signedIn = true;
+        await this.loadMine();
+      } catch (e) { this.err = PL.friendly(e); }
+      this.busy = false;
+    },
+
+    toggle(s) {
+      this.picked = this.picked.includes(s) ? this.picked.filter((x) => x !== s) : this.picked.concat([s]);
+      this.err = '';
+    },
+
+    async submit() {
+      if (!this.picked.length) { this.err = 'Choose at least one skill you can work on.'; return; }
+      this.busy = true; this.err = '';
+      try {
+        const p = this.profile;
+        const { error } = await PL.sb.from('applications').upsert({ user_id: p.id, role: this.r.title, skills: this.picked, status: 'submitted' }, { onConflict: 'user_id,role' });
+        if (error) throw error;
+        const patch = {};
+        if (!p.role) patch.role = this.r.title;
+        if (this.r.primary && !p.field) patch.field = this.r.primary;
+        if (this.r.lang && !(p.langs || []).includes(this.r.lang)) patch.langs = (p.langs || []).concat([this.r.lang]);
+        if (Object.keys(patch).length) { await PL.updateProfile(patch); Object.assign(p, patch); }
+        if (p.completed_at) this.done = true; else location.href = 'apply.html';
+      } catch (e) { this.err = PL.friendly(e); }
+      this.busy = false;
+    }
+  }));
+});
+</script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
+<style>
+.job-layout { display: grid; grid-template-columns: minmax(0, 520px) minmax(0, 1fr); align-items: start; border-top: 1px solid var(--line); }
+.job-info { padding: 32px 32px 64px 24px; border-right: 1px solid var(--line); }
+.job-panel { position: sticky; top: 92px; width: 100%; max-width: 420px; margin: 0 auto; padding: 56px 24px; }
+.job-panel h2 { margin: 0 0 20px; font-family: var(--display); font-weight: 500; font-size: 28px; letter-spacing: -.02em; line-height: 1.15; text-align: center; }
+.job-sec { padding: 24px 0; border-top: 1px solid var(--line); }
+.job-sec h2 { margin: 0 0 12px; font-family: var(--display); font-weight: 500; font-size: 20px; letter-spacing: -.01em; }
+.job-sub { margin: 0 0 6px; font-size: 15px; font-weight: 600; }
+.job-sec p { margin: 0 0 10px; color: var(--ink-2); font-size: 15px; }
+.job-sec ul { margin: 0; padding-left: 20px; color: var(--ink-2); font-size: 15px; }
+.job-sec li { margin-bottom: 6px; }
+.job-facts { display: grid; gap: 6px; list-style: none; margin: 16px 0 24px; padding: 0; color: var(--ink-2); font-size: 15px; }
+.job-facts strong { color: var(--ink); }
+.job-sec ul.job-tags { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; padding: 0; }
+.job-tags li { margin: 0; padding: 4px 12px; border: 1px solid var(--line-2); border-radius: 999px; background: #fff; font-size: 14px; }
+.job-sec .acc-item { border-top: 0; }
+.job-sec .acc-q { font-size: 16px; }
+.job-sec .acc-btn { padding: 10px 0; }
+.job-sec .acc-sign { width: 28px; height: 28px; font-size: 15px; }
+.job-sec .acc-a { padding: 0 0 12px; font-size: 15px; }
+.job-legal { margin: 18px 0 0; font-size: 13px; color: var(--muted); text-align: center; }
+.job-jump { display: none; margin-bottom: 20px; }
+@media (max-width: 900px) {
+  .job-layout { grid-template-columns: minmax(0, 1fr); }
+  .job-info { padding: 24px; border-right: 0; }
+  .job-panel { position: static; max-width: none; padding: 32px 24px 56px; border-top: 1px solid var(--line); scroll-margin-top: 80px; }
+  .job-jump { display: inline-flex; }
+}
+</style>
+</head>
+<body id="top">
+<header id="site-header" data-active="roles"></header>
+
+<main x-data="job">
+  <div x-show="!loading && !r" x-cloak class="container" style="padding-block: 56px 96px">
+    <div class="card" style="text-align: center; padding: 36px">
+      <h1 class="h3" style="margin-bottom: 8px">We couldn't find that role.</h1>
+      <p class="muted" style="margin: 0 0 18px">It may have closed or changed. See what's open now.</p>
+      <a class="btn btn-dark" href="roles.html">View all roles</a>
+    </div>
+  </div>
+
+  <template x-if="r">
+    <div class="job-layout">
+      <article class="job-info">
+        <a href="roles.html" style="font-size: 14px; font-weight: 600">← All roles</a>
+        <p class="eyebrow" style="margin-top: 20px" x-text="r.field"></p>
+        <h1 style="margin: 0; font-family: var(--display); font-weight: 700; font-size: 34px; letter-spacing: -.02em; line-height: 1.1" x-text="r.title"></h1>
+        <ul class="job-facts">
+          <li><strong x-text="'Up to $' + r.rate + '/hr'"></strong></li>
+          <li x-text="r.needed + ' people needed'"></li>
+          <li>Remote · Part-time · Flexible hours</li>
+          <li x-text="r.levels"></li>
+        </ul>
+        <a class="btn btn-primary job-jump" href="#apply">Apply for this role</a>
+
+        <section class="job-sec">
+          <h2>Overview</h2>
+          <p x-text="jd.intro"></p>
+          <p>This is flexible, hourly contract work, not a traditional job. You'll work in Plumbline's browser-based workspace in short sessions that fit around your studies or job. Every project includes training and a written guide, so you don't need any AI background.</p>
+          <div x-show="moreOpen" x-cloak>
+            <section style="margin-top: 16px"><h3 class="job-sub">What you'll do</h3><ul><template x-for="t in jd.tasks" :key="t"><li x-text="t"></li></template></ul></section>
+            <section style="margin-top: 16px"><h3 class="job-sub">What you need</h3><ul><template x-for="t in jd.needs" :key="t"><li x-text="t"></li></template></ul></section>
+            <section style="margin-top: 16px"><h3 class="job-sub">Good to have</h3><ul><template x-for="t in jd.bonus" :key="t"><li x-text="t"></li></template></ul></section>
+            <section style="margin-top: 16px"><h3 class="job-sub">Pay and hours</h3><ul>
+              <li x-text="'Up to $' + r.rate + ' per hour, depending on the project and your expertise.'"></li>
+              <li x-text="PAY"></li>
+              <li>No fixed schedule. Most projects let you work in short sessions whenever suits you.</li>
+              <li>You work as an independent contractor, not an employee.</li>
+            </ul></section>
+            <section style="margin-top: 16px"><h3 class="job-sub">How to get started</h3><ul>
+              <li>Apply and verify your identity.</li>
+              <li>Pass a short skills check and complete the training.</li>
+              <li>Get matched to a project, then start tasking.</li>
+            </ul></section>
+            <p class="muted" style="margin-top: 14px; font-size: 14px" x-text="ELIG"></p>
+          </div>
+          <button type="button" class="link-btn" :aria-expanded="moreOpen" @click="moreOpen = !moreOpen" x-text="moreOpen ? 'Less' : 'More'"></button>
+        </section>
+
+        <section class="job-sec">
+          <h2>Skills for this role</h2>
+          <ul class="job-tags"><template x-for="s in jd.skills" :key="s"><li x-text="s"></li></template></ul>
+        </section>
+        <section class="job-sec">
+          <h2>What skills you'll gain</h2>
+          <ul class="job-tags"><template x-for="s in gain" :key="s"><li x-text="s"></li></template></ul>
+        </section>
+        <section class="job-sec">
+          <h2>FAQ</h2>
+          <template x-for="(f, i) in faqs" :key="i">
+            <div class="acc-item">
+              <button type="button" class="acc-btn" :aria-expanded="openFaq === i" @click="openFaq = openFaq === i ? -1 : i">
+                <span class="acc-q" x-text="f.q"></span><span class="acc-sign" aria-hidden="true" x-text="openFaq === i ? '−' : '+'"></span>
+              </button>
+              <p class="acc-a" x-show="openFaq === i" x-text="f.a"></p>
+            </div>
+          </template>
+        </section>
+      </article>
+
+      <aside id="apply" class="job-panel" aria-label="Apply for this role">
+        <div x-show="loading" class="spinner" role="status" aria-label="Loading" style="margin: 0 auto"></div>
+        <p class="alert alert-ok" style="margin-bottom: 18px; text-align: center" x-show="invite" x-cloak x-text="inviteText"></p>
+
+        <!-- Logged out: email first, then password, or create an account -->
+        <div x-show="!loading && !signedIn" x-cloak>
+          <h2>Log in or sign up to apply</h2>
+          <form x-show="emailStep" class="stack" style="gap: 12px" @submit.prevent="continueEmail()" novalidate>
+            <div class="field"><label class="label sr-only" for="job-email">Email</label><input id="job-email" class="input" type="email" autocomplete="email" placeholder="Enter your email" x-model="email"></div>
+            <button type="submit" class="btn btn-dark">Continue with email</button>
+          </form>
+          <form x-show="!emailStep" class="stack" style="gap: 12px" @submit.prevent="logIn()" novalidate>
+            <p style="margin: 0; text-align: center; color: var(--ink-2)"><span x-text="email.trim()"></span> · <button type="button" class="link-btn" style="min-height: 0" @click="emailStep = true; err = ''">Change</button></p>
+            <div class="field"><label class="label" for="job-pass">Password</label><input id="job-pass" class="input" type="password" autocomplete="current-password" x-model="password"></div>
+            <button type="submit" id="job-login" class="btn btn-dark" :disabled="busy" x-text="busy ? 'Logging in…' : 'Log in'"></button>
+            <a class="btn" id="job-signup" :href="signupHref">New here? Create an account</a>
+            <a :href="loginHref" style="text-align: center; font-size: 14px">Forgot password?</a>
+          </form>
+          <p class="job-legal">By continuing, you agree to our <a href="legal.html#terms">Terms of service</a> and <a href="legal.html#privacy">Privacy policy</a>.</p>
+        </div>
+
+        <!-- Logged in: choose skills -->
+        <div x-show="!loading && signedIn && !done" x-cloak class="stack" style="gap: 14px">
+          <h2 style="margin-bottom: 0">Choose your skills</h2>
+          <p class="muted" style="margin: 0; text-align: center; font-size: 15px">Pick the skills you can work on. We use these to match you to projects.</p>
+          <p class="alert alert-note" x-show="otherApplied.length">Your other applications stay active: <span x-text="otherApplied.join(', ')"></span>.</p>
+          <div class="chips" role="group" aria-label="Skills you can work on" style="justify-content: center">
+            <template x-for="s in jd.skills" :key="s"><button type="button" class="chip" :aria-pressed="picked.includes(s)" @click="toggle(s)" x-text="s"></button></template>
+          </div>
+          <button type="button" id="job-submit" class="btn btn-primary" :disabled="busy" @click="submit()" x-text="busy ? 'Saving…' : (onThisRole ? 'Update my skills' : 'Apply for this role')"></button>
+        </div>
+
+        <!-- Saved, for someone who has finished onboarding -->
+        <div x-show="done" x-cloak class="stack" style="gap: 12px">
+          <p class="alert alert-ok" role="status"><strong>Application saved.</strong> We'll use your skills to match you to projects for this role.</p>
+          <a class="btn btn-dark" href="workspace.html">Go to my workspace</a>
+        </div>
+
+        <p class="alert alert-err" role="alert" style="margin-top: 12px" x-show="err" x-text="err" x-cloak></p>
+      </aside>
+    </div>
+  </template>
+</main>
+
+<footer id="site-footer"></footer>
+</body>
+</html>

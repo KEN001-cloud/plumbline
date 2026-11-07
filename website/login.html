@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Log in — Plumbline</title>
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.0/dist/umd/supabase.js"></script>
+<script src="assets/data.js"></script>
+<script src="assets/app.js"></script>
+<script>
+document.addEventListener('alpine:init', () => {
+  Alpine.data('login', () => ({
+    mode: 'password',          // password | link | forgot | reset | signedIn
+    email: '', password: '', newPassword: '',
+    busy: false, err: '', ok: '', who: '',
+    next: (() => { const n = new URLSearchParams(location.search).get('next') || 'workspace.html'; return /^[a-z0-9_-]+\.html(\?role=[^#&\s]*)?(#[a-z0-9_-]*)?$/i.test(n) ? n : 'workspace.html'; })(),
+    async init() {
+      if (!PL.configured) { this.err = PL.NOT_CONFIGURED; return; }
+      PL.sb.auth.onAuthStateChange((evt, s) => {
+        if (evt === 'PASSWORD_RECOVERY') { this.mode = 'reset'; this.err = ''; this.ok = ''; }
+      });
+      const s = await PL.session();
+      const recovery = /type=recovery/.test(PL.initialHash);
+      if (recovery) this.mode = 'reset';
+      else if (s) { this.who = s.user.email; this.mode = 'signedIn'; }
+    },
+    async go() {
+      const p = await PL.profile().catch(() => null);
+      const admin = await PL.sb.rpc('is_admin').then((r) => r.data === true, () => false);
+      if (admin && this.next === 'workspace.html') { location.href = 'admin.html'; return; }
+      location.href = p && !p.completed_at && !this.next.startsWith('job.html') ? 'apply.html' : this.next;
+    },
+    async submit() {
+      this.err = ''; this.ok = '';
+      if (!PL.configured) { this.err = PL.NOT_CONFIGURED; return; }
+      const email = this.email.trim();
+      if (this.mode !== 'reset' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { this.err = 'Please enter a valid email address.'; return; }
+      this.busy = true;
+      try {
+        if (this.mode === 'password') {
+          if (!this.password) throw new Error('Please enter your password.');
+          const { error } = await PL.sb.auth.signInWithPassword({ email, password: this.password });
+          if (error) throw error;
+          await this.go();
+          return;
+        }
+        if (this.mode === 'link') {
+          const { error } = await PL.sb.auth.signInWithOtp({ email, options: { shouldCreateUser: false, emailRedirectTo: PL.siteBase() + this.next } });
+          if (error) throw error;
+          this.ok = 'Check your inbox. We sent a sign-in link to ' + email + '. It works on any device.';
+        }
+        if (this.mode === 'forgot') {
+          const { error } = await PL.sb.auth.resetPasswordForEmail(email, { redirectTo: PL.siteBase() + 'login.html' });
+          if (error) throw error;
+          this.ok = 'If an account exists for ' + email + ', a reset link is on its way.';
+        }
+        if (this.mode === 'reset') {
+          if (this.newPassword.length < 8) throw new Error('Your new password needs at least 8 characters.');
+          const { error } = await PL.sb.auth.updateUser({ password: this.newPassword });
+          if (error) throw error;
+          this.ok = 'Password updated. Taking you to your workspace…';
+          setTimeout(() => this.go(), 900);
+        }
+      } catch (e) {
+        this.err = /Signups not allowed|User not found/i.test(e.message || '') ? 'We couldn’t find an account for that email. Apply to create one.' : PL.friendly(e);
+      }
+      this.busy = false;
+    },
+    setMode(m) { this.mode = m; this.err = ''; this.ok = ''; },
+    async signOut() { await PL.sb.auth.signOut(); this.mode = 'password'; this.who = ''; }
+  }));
+});
+</script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
+</head>
+<body>
+<div x-data="login" style="min-height: 100vh; display: flex; flex-wrap: wrap">
+  <section aria-hidden="true" style="flex: 1 1 420px; min-height: 300px; background: var(--ink); color: var(--ground); position: relative; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; padding: 48px">
+    <div style="position: absolute; right: 18%; top: 0; width: 28px; height: 200px; transform-origin: 14px 0; animation: pl-sway 5s ease-in-out infinite">
+      <div style="width: 2px; height: 120px; background: var(--ground); margin: 0 auto"></div>
+      <div style="width: 22px; height: 22px; background: var(--accent-2); transform: rotate(45deg); margin: -6px auto 0"></div>
+    </div>
+    <p class="eyebrow" style="color: #A9ADA4; font-size: 12px">Fellow workspace</p>
+    <p style="margin: 0; font-family: var(--display); font-size: clamp(32px, 4vw, 52px); line-height: 1; letter-spacing: -.03em; max-width: 440px">Measured true, one task at a time.</p>
+  </section>
+
+  <main style="flex: 1 1 480px; display: flex; flex-direction: column; padding: 32px clamp(24px, 6vw, 80px)">
+    <div class="row" style="justify-content: space-between; align-items: center; gap: 12px">
+      <a class="brand" href="index.html" aria-label="Plumbline home"><svg width="24" height="28" viewBox="0 0 26 30" aria-hidden="true"><line x1="13" y1="0" x2="13" y2="12" stroke="#121417" stroke-width="2"/><path d="M13 12 L22 20 L13 30 L4 20 Z" fill="#3434E0"/></svg><span>Plumbline</span></a>
+      <a href="index.html" style="text-decoration: none; padding: 10px 0">← Back to home</a>
+    </div>
+
+    <div style="flex: 1; display: flex; align-items: center; padding-block: 48px">
+      <div style="width: 100%; max-width: 420px">
+        <template x-if="mode === 'signedIn'">
+          <div>
+            <h1 class="h2" style="margin-bottom: 10px">You're signed in.</h1>
+            <p class="muted" style="margin: 0 0 24px">Signed in as <strong style="color: var(--ink)" x-text="who"></strong>.</p>
+            <div class="row" style="gap: 10px"><button type="button" class="btn btn-dark" @click="go()">Continue →</button><button type="button" class="btn" @click="signOut()">Log out</button></div>
+          </div>
+        </template>
+
+        <template x-if="mode !== 'signedIn'">
+          <div>
+            <h1 class="h2" style="margin-bottom: 8px" x-text="{ password: 'Welcome back', link: 'Email me a link', forgot: 'Reset your password', reset: 'Choose a new password' }[mode]"></h1>
+            <p class="muted" style="margin: 0 0 28px" x-text="{ password: 'Log in with the email you used to apply.', link: 'We’ll email you a one-time link that signs you in on any device.', forgot: 'Enter your email and we’ll send a link to set a new password.', reset: 'Pick a new password with at least 8 characters.' }[mode]"></p>
+            <form class="stack" @submit.prevent="submit()" novalidate>
+              <div class="field" x-show="mode !== 'reset'"><label class="label" for="lg-email">Email</label><input id="lg-email" class="input" type="email" autocomplete="email" x-model="email" style="border-color: var(--ink)"></div>
+              <div class="field" x-show="mode === 'password'">
+                <div class="row" style="justify-content: space-between; align-items: baseline; gap: 8px"><label class="label" for="lg-pass">Password</label><button type="button" class="link-btn" style="min-height: 0; font-size: 14px" @click="setMode('forgot')">Forgot password?</button></div>
+                <input id="lg-pass" class="input" type="password" autocomplete="current-password" x-model="password" style="border-color: var(--ink)">
+              </div>
+              <div class="field" x-show="mode === 'reset'"><label class="label" for="lg-new">New password</label><input id="lg-new" class="input" type="password" autocomplete="new-password" x-model="newPassword" style="border-color: var(--ink)"></div>
+              <button type="submit" class="btn btn-lg btn-primary" :disabled="busy">
+                <span class="spinner" x-show="busy" aria-hidden="true" style="border-top-color: #fff"></span>
+                <span x-text="{ password: 'Log in', link: 'Send sign-in link', forgot: 'Send reset link', reset: 'Save new password' }[mode]"></span>
+              </button>
+            </form>
+            <p class="alert alert-err" role="alert" style="margin-top: 16px" x-show="err" x-text="err"></p>
+            <p class="alert alert-ok" role="status" style="margin-top: 16px" x-show="ok" x-text="ok"></p>
+            <div class="stack" style="margin-top: 26px; padding-top: 20px; border-top: 1px solid var(--line); gap: 8px; color: var(--ink-2)">
+              <button type="button" class="link-btn" style="align-self: flex-start" x-show="mode === 'password'" @click="setMode('link')">Email me a sign-in link instead</button>
+              <button type="button" class="link-btn" style="align-self: flex-start" x-show="mode !== 'password' && mode !== 'reset'" @click="setMode('password')">Log in with a password</button>
+              <span>New to Plumbline? <a href="apply.html" class="accent" style="font-weight: 600">Apply to the fellowship</a></span>
+              <span>Trouble signing in? <a href="help.html#contact" class="accent" style="font-weight: 600">Contact support</a></span>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+    <p class="muted" style="margin: 0; font-size: 13px">By signing in you agree to our <a href="legal.html#terms">Terms</a> and <a href="legal.html#privacy">Privacy policy</a>.</p>
+  </main>
+</div>
+</body>
+</html>

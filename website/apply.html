@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Apply — Plumbline</title>
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="assets/styles.css">
+<script src="assets/config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.0/dist/umd/supabase.js"></script>
+<script src="assets/data.js"></script>
+<script src="assets/app.js"></script>
+<script src="assets/apply.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
+<style>
+.rail { list-style: none; margin: 0; padding: 0 0 0 18px; border-left: 2px solid var(--ink); display: flex; flex-direction: column; gap: 4px; }
+.rail li { position: relative; }
+.rail li::before { content: ''; position: absolute; left: -26px; top: 15px; width: 12px; height: 12px; transform: rotate(45deg); background: var(--ground); border: 2px solid #A9ADA4; box-sizing: border-box; }
+.rail li.done::before { background: var(--ink); border-color: var(--ink); }
+.rail li.current::before { background: var(--accent); border-color: var(--accent); }
+.rail button { width: 100%; text-align: left; background: transparent; border: 1px solid transparent; border-radius: 10px; padding: 10px 14px; min-height: 44px; font-size: 15px; }
+.rail li.current button { background: #fff; border-color: var(--ink); font-weight: 600; }
+.rail li.locked button { color: #6B7078; }
+.step-title { margin: 0 0 8px; font-family: var(--display); font-weight: 700; font-size: clamp(30px, 4vw, 42px); letter-spacing: -.03em; line-height: 1.05; }
+.drop { border: 1px dashed var(--ink); border-radius: 14px; padding: 18px; display: flex; flex-direction: column; gap: 10px; background: var(--ground); }
+.opt-btn { flex: 1 1 280px; text-align: left; background: #fff; border: 1px solid var(--line-2); border-radius: 10px; padding: 12px 15px; font-size: 15px; min-height: 44px; }
+.rail-note {}
+@media (max-width: 760px) { .rail, .rail-note { display: none; } }
+.opt-btn[aria-pressed="true"] { border: 2px solid var(--accent); background: var(--accent-soft); padding: 11px 14px; }
+</style>
+</head>
+<body>
+<div x-data="apply" style="min-height: 100vh">
+  <header style="border-bottom: 1px solid var(--line); background: var(--ground)">
+    <nav aria-label="Onboarding" class="container row" style="padding-block: 12px; align-items: center; justify-content: space-between; gap: 12px">
+      <a class="brand" href="index.html" aria-label="Plumbline home"><svg width="24" height="28" viewBox="0 0 26 30" aria-hidden="true"><line x1="13" y1="0" x2="13" y2="12" stroke="#121417" stroke-width="2"/><path d="M13 12 L22 20 L13 30 L4 20 Z" fill="#3434E0"/></svg><span>Plumbline</span></a>
+      <div class="row" style="gap: 8px 18px; align-items: center; font-size: 15px">
+        <a href="help.html" style="text-decoration: none; padding: 10px 0">Need help?</a>
+        <template x-if="signedIn"><span class="muted" style="font-size: 14px" x-text="userEmail"></span></template>
+        <template x-if="signedIn"><button type="button" class="btn btn-sm" @click="signOut()">Log out</button></template>
+        <template x-if="!signedIn"><a href="login.html?next=apply.html" style="text-decoration: none; padding: 10px 0">Log in</a></template>
+        <a class="btn btn-sm" href="index.html">Save &amp; exit</a>
+      </div>
+    </nav>
+    <div aria-hidden="true" style="height: 4px; background: #E4E5DF"><div :style="'height: 4px; background: var(--accent); transition: width .3s; width:' + pct"></div></div>
+  </header>
+  <div class="setup-bar" x-show="!PL.configured" x-cloak role="status" x-text="PL.NOT_CONFIGURED"></div>
+
+  <main class="container row" style="padding-block: 40px 96px; gap: 32px; align-items: flex-start">
+    <!-- RAIL -->
+    <aside aria-label="Application progress" style="flex: 1 1 260px; min-width: 0">
+      <p class="eyebrow" style="margin-bottom: 6px; font-size: 12px">Fellow onboarding</p>
+      <p style="margin: 0 0 20px; font-family: var(--display); font-size: 28px; letter-spacing: -.02em" x-text="'Step ' + (step + 1) + ' of 8 · ' + LABELS[step]"></p>
+      <ol class="rail">
+        <template x-for="(l, i) in LABELS" :key="i">
+          <li :class="i === step ? 'current' : (i <= maxStep ? 'done' : 'locked')">
+            <button type="button" :disabled="i > maxStep || busy" :aria-current="i === step ? 'step' : null" @click="go(i)">
+              <span class="mono" x-text="String(i + 1).padStart(2, '0')"></span>&nbsp; <span x-text="l"></span><span x-show="i !== step && i < maxStep" style="color: #15803D"> ✓</span>
+            </button>
+          </li>
+        </template>
+      </ol>
+      <p class="muted rail-note" style="margin: 24px 0 0; font-size: 14px; max-width: 260px">Your progress saves to your account after every step, so you can stop and continue on any device.</p>
+    </aside>
+
+    <!-- CARD -->
+    <section class="card-hard" aria-live="polite" style="flex: 999 1 560px; min-width: 0">
+      <div x-show="loading" class="row" style="align-items: center; gap: 12px"><span class="spinner" aria-hidden="true"></span><span>Loading your application…</span></div>
+
+      <div x-show="!loading" x-cloak>
+        <p class="alert alert-ok" style="margin-bottom: 12px" x-show="invite" x-text="inviteTask ? 'You were invited to the task: ' + inviteTask + '. Finish onboarding to start it.' : 'You were invited to join Plumbline.'"></p>
+        <div x-show="role" class="row" style="margin-bottom: 24px; padding: 12px 14px 12px 18px; border-radius: 12px; background: var(--accent-soft); align-items: center; justify-content: space-between; gap: 10px">
+          <span>Applying for <strong x-text="role"></strong></span>
+          <span class="row" style="gap: 6px"><a href="roles.html" class="accent" style="font-weight: 600; padding: 10px 8px; font-size: 14px">Change role</a><button type="button" class="link-btn" style="color: var(--ink-2); font-size: 14px; text-decoration: none; padding: 0 8px" @click="removeRole()">Remove</button></span>
+        </div>
+
+        <!-- CONFIRM EMAIL -->
+        <div x-show="awaitingConfirm">
+          <div aria-hidden="true" style="width: 22px; height: 22px; background: var(--accent); transform: rotate(45deg); margin: 4px 0 24px 6px"></div>
+          <h1 class="step-title">Confirm your email.</h1>
+          <p style="margin: 0 0 18px; font-size: 17px; color: var(--ink-2)">We sent a link to <strong x-text="f.email"></strong>. Open it on any device — it signs you in and brings you straight back to step 2.</p>
+          <div class="row" style="gap: 10px"><button type="button" class="btn" @click="resendConfirm()">Resend email</button><button type="button" class="btn btn-ghost" @click="awaitingConfirm = false">Use a different email</button></div>
+          <p class="alert alert-ok" style="margin-top: 16px" x-show="notice" x-text="notice"></p>
+        </div>
+
+        <div x-show="!awaitingConfirm">
+        <!-- 1 ACCOUNT -->
+        <div x-show="step === 0">
+          <p class="eyebrow" style="font-size: 12px">01 · Account</p>
+          <h1 class="step-title">Let's start with you.</h1>
+          <p class="muted" style="margin: 0 0 28px">Create your fellow account. Already have one? <a href="login.html?next=apply.html" class="accent" style="font-weight: 600">Log in</a> to continue.</p>
+          <div class="row" style="gap: 18px">
+            <div class="field"><label class="label" for="ob-name">Full legal name</label><input id="ob-name" class="input" type="text" autocomplete="name" x-model="f.name"></div>
+            <div class="field"><label class="label" for="ob-email">Email</label><input id="ob-email" class="input" type="email" autocomplete="email" x-model="f.email" :disabled="signedIn"></div>
+            <div class="field" x-show="!signedIn"><label class="label" for="ob-pass">Password <span class="opt">(8+ characters)</span></label><input id="ob-pass" class="input" type="password" autocomplete="new-password" x-model="f.password"></div>
+            <div class="field"><label class="label" for="ob-country">Country of residence</label>
+              <select id="ob-country" class="input" x-model="f.country"><option value="">Select a country</option><template x-for="c in D.COUNTRIES" :key="c"><option :value="c" x-text="c" :selected="f.country === c"></option></template></select></div>
+            <div class="field"><label class="label" for="ob-heard">How did you hear about us? <span class="opt">(optional)</span></label>
+              <select id="ob-heard" class="input" x-model="f.heard"><option value="">Choose one</option><option>Friend or colleague</option><option>University or career center</option><option>Social media</option><option>Search engine</option><option>Other</option></select></div>
+          </div>
+          <label class="check" style="margin-top: 22px"><input type="checkbox" x-model="f.agreeTerms"><span>I agree to the <a href="legal.html#terms" target="_blank" class="accent" style="font-weight: 600">Terms of service</a> and <a href="legal.html#privacy" target="_blank" class="accent" style="font-weight: 600">Privacy policy</a>.</span></label>
+        </div>
+
+        <!-- 2 EXPERTISE -->
+        <div x-show="step === 1" x-cloak>
+          <p class="eyebrow" style="font-size: 12px">02 · Expertise</p>
+          <h1 class="step-title">What do you know deeply?</h1>
+          <p class="muted" style="margin: 0 0 28px">We match projects to your strongest field first, then to anything else you add.</p>
+          <div class="row" style="gap: 18px">
+            <div class="field"><label class="label" for="ob-field">Primary field</label>
+              <select id="ob-field" class="input" x-model="f.field"><option value="">Select your field</option>
+                <template x-for="g in D.FIELD_GROUPS" :key="g[0]"><optgroup :label="g[0]"><template x-for="o in g[1]" :key="o"><option :value="o" x-text="o" :selected="f.field === o"></option></template></optgroup></template>
+              </select></div>
+            <div class="field"><label class="label" for="ob-edu">Highest education</label>
+              <select id="ob-edu" class="input" x-model="f.edu"><option value="">Select level</option><template x-for="o in D.EDU" :key="o"><option :value="o" x-text="o" :selected="f.edu === o"></option></template></select></div>
+            <div class="field"><label class="label" for="ob-subject">Degree subject &amp; institution <span class="opt">(optional)</span></label><input id="ob-subject" class="input" type="text" placeholder="e.g. BSc Computer Science, University of Nairobi" x-model="f.subject"></div>
+            <div class="field"><label class="label" for="ob-years">Years of experience in this field</label>
+              <select id="ob-years" class="input" x-model="f.years"><option value="">Select</option><template x-for="o in D.YEARS" :key="o"><option :value="o" x-text="o" :selected="f.years === o"></option></template></select></div>
+          </div>
+          <fieldset style="margin-top: 26px"><legend>Other fields you're confident in <span class="muted" style="font-weight: 400">(optional)</span></legend>
+            <div class="chips"><template x-for="o in D.SEC_FIELDS" :key="o"><button type="button" class="chip" :aria-pressed="sec.includes(o)" @click="toggle('sec', o)" x-text="(sec.includes(o) ? '✓ ' : '') + o"></button></template></div></fieldset>
+          <fieldset style="margin-top: 26px"><legend>Languages you work in fluently</legend>
+            <div class="chips"><template x-for="o in D.LANGS" :key="o"><button type="button" class="chip" :aria-pressed="langs.includes(o)" @click="toggle('langs', o)" x-text="(langs.includes(o) ? '✓ ' : '') + o"></button></template></div></fieldset>
+          <div class="row" style="gap: 18px; margin-top: 26px">
+            <div class="field"><label class="label" for="ob-link">LinkedIn, GitHub or portfolio <span class="opt">(optional)</span></label><input id="ob-link" class="input" type="url" placeholder="https://" x-model="f.link"></div>
+            <div class="field"><label class="label" for="ob-resume">CV / résumé <span class="opt">(PDF or Word, optional)</span></label><input id="ob-resume" class="input" type="file" accept=".pdf,.doc,.docx" @change="pick($event, 'resume')" style="border-style: dashed; background: var(--ground); font-size: 14px">
+              <span x-show="onFile.resume && !files.resume" style="font-size: 13px; color: #15803D" x-text="'✓ CV on file'"></span></div>
+          </div>
+        </div>
+
+        <!-- 3 AVAILABILITY -->
+        <div x-show="step === 2" x-cloak>
+          <p class="eyebrow" style="font-size: 12px">03 · Availability &amp; eligibility</p>
+          <h1 class="step-title">When and how do you like to work?</h1>
+          <p class="muted" style="margin: 0 0 28px">There's no minimum schedule. This helps us offer the right projects.</p>
+          <fieldset style="margin-bottom: 24px"><legend>Are you able to work as an independent contractor where you live?</legend>
+            <div class="chips"><template x-for="o in ['Yes', 'No', 'Not sure']" :key="o"><button type="button" class="chip" :aria-pressed="f.auth === o" @click="f.auth = o; err = ''" x-text="o"></button></template></div>
+            <p class="alert alert-warn" style="margin-top: 12px" x-show="f.auth === 'No' || f.auth === 'Not sure'">You can continue, but we'll confirm eligibility before paid work starts. <span x-text="D.ELIG"></span></p>
+          </fieldset>
+          <div class="row" style="gap: 18px">
+            <div class="field"><label class="label" for="ob-hours">Hours per week</label><select id="ob-hours" class="input" x-model="f.hours"><option value="">Select</option><template x-for="o in D.HOURS" :key="o"><option :value="o" x-text="o" :selected="f.hours === o"></option></template></select></div>
+            <div class="field"><label class="label" for="ob-tz">Time zone</label><select id="ob-tz" class="input" x-model="f.tz"><option value="">Select</option><template x-for="o in D.TIMEZONES" :key="o"><option :value="o" x-text="o" :selected="f.tz === o"></option></template></select></div>
+          </div>
+          <fieldset style="margin-top: 24px"><legend>Task types you'd like to do</legend>
+            <div class="chips"><template x-for="o in D.TASK_TYPES" :key="o"><button type="button" class="chip" :aria-pressed="types.includes(o)" @click="toggle('types', o)" x-text="(types.includes(o) ? '✓ ' : '') + o"></button></template></div></fieldset>
+        </div>
+
+        <!-- 4 IDENTITY -->
+        <div x-show="step === 3" x-cloak>
+          <p class="eyebrow" style="font-size: 12px">04 · Verify identity</p>
+          <h1 class="step-title">Confirm it's really you.</h1>
+          <p class="muted" style="margin: 0 0 28px">One photo of a government ID and one selfie. Files are stored privately and only our verification team can see them.</p>
+          <div class="field" style="max-width: 360px; margin-bottom: 20px"><label class="label" for="ob-idtype">ID type</label><select id="ob-idtype" class="input" x-model="f.idType"><option>National ID</option><option>Passport</option><option>Driver's license</option></select></div>
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px">
+            <div class="drop"><label for="ob-id" style="font-weight: 600">Photo of your ID</label><span class="muted" style="font-size: 13px">Clear, uncropped, all four corners visible. Max 10 MB.</span>
+              <input id="ob-id" type="file" accept="image/*,.pdf" @change="pick($event, 'idFront')" style="font-size: 14px; min-height: 44px">
+              <span x-show="onFile.idFront && !files.idFront" style="font-size: 13px; color: #15803D">✓ ID on file</span></div>
+            <div class="drop"><label for="ob-selfie" style="font-weight: 600">A selfie</label><span class="muted" style="font-size: 13px">Face the camera in good light, no hat or sunglasses.</span>
+              <input id="ob-selfie" type="file" accept="image/*" capture="user" @change="pick($event, 'selfie')" style="font-size: 14px; min-height: 44px">
+              <span x-show="onFile.selfie && !files.selfie" style="font-size: 13px; color: #15803D">✓ Selfie on file</span></div>
+          </div>
+          <div class="row" style="margin-top: 22px; align-items: center; gap: 14px">
+            <button type="button" class="btn btn-dark" @click="submitId()" :disabled="verifyBusy" x-show="verification !== 'verified'" x-text="verifyBusy ? 'Uploading…' : (verification === 'pending' ? 'Replace documents' : 'Submit for verification')"></button>
+            <span class="pill alert-ok" x-show="verification === 'pending'">✓ Submitted — under review</span>
+            <span class="pill alert-ok" x-show="verification === 'verified'">✓ Identity verified</span>
+          </div>
+          <p class="alert alert-err" style="margin-top: 14px" x-show="verification === 'rejected'">We couldn't verify your last documents. Please upload clearer photos and submit again.</p>
+          <p class="muted" style="margin: 16px 0 0; font-size: 13px">You can keep going while we review. Payouts start once your identity is verified.</p>
+        </div>
+
+        <!-- 5 QUIZ -->
+        <div x-show="step === 4" x-cloak>
+          <p class="eyebrow" style="font-size: 12px">05 · Skills check</p>
+          <h1 class="step-title">Three quick judgment calls.</h1>
+          <p class="muted" style="margin: 0 0 24px">No trick questions — this shows how you'd review an AI response. Get 2 of 3 to pass.</p>
+          <div class="stack" style="gap: 22px">
+            <template x-for="(q, qi) in D.QUIZ" :key="qi">
+              <fieldset style="border: 1px solid var(--line); border-radius: 14px; padding: 18px">
+                <legend class="mono muted" style="padding: 0 6px; font-size: 12px; font-weight: 400" x-text="'QUESTION ' + (qi + 1)"></legend>
+                <p style="margin: 0 0 12px; font-weight: 600" x-text="q.text"></p>
+                <div class="stack" style="gap: 8px">
+                  <template x-for="(o, oi) in q.opts" :key="oi">
+                    <div class="row" style="align-items: center; gap: 8px">
+                      <button type="button" class="opt-btn" :aria-pressed="qa[qi] === oi" @click="pickAnswer(qi, oi)" x-text="o"></button>
+                      <span x-show="quizChecked && qa[qi] === oi && results[qi] === true" style="font-size: 13px; font-weight: 600; color: #15803D">✓ Best answer</span>
+                      <span x-show="quizChecked && qa[qi] === oi && results[qi] === false" style="font-size: 13px; font-weight: 600; color: #B42318">✗ Not quite</span>
+                    </div>
+                  </template>
+                </div>
+              </fieldset>
+            </template>
+          </div>
+          <div class="row" style="margin-top: 20px; gap: 12px; align-items: center">
+            <button type="button" class="btn btn-dark" x-show="!quizChecked" @click="checkQuiz()">Check my answers</button>
+            <span class="pill alert-ok" x-show="passed" x-text="'Passed — ' + score + ' of 3'"></span>
+            <span class="pill alert-err" x-show="quizChecked && !passed" x-text="score + ' of 3 — review the marks and try again'"></span>
+            <button type="button" class="btn" x-show="quizChecked && !passed" @click="retryQuiz()">Try again</button>
+          </div>
+        </div>
+
+        <!-- 6 TRAINING -->
+        <div x-show="step === 5" x-cloak>
+          <p class="eyebrow" style="font-size: 12px">06 · Training</p>
+          <h1 class="step-title">Learn what good looks like.</h1>
+          <p class="muted" style="margin: 0 0 24px">Four short lessons. Open each one, read it, and mark it complete. <strong style="color: var(--ink)" x-text="trained.length + ' of 4 done.'"></strong></p>
+          <div class="stack" style="gap: 12px">
+            <template x-for="(m, i) in D.MODULES" :key="i">
+              <div style="border: 1px solid var(--line); border-radius: 14px; overflow: hidden">
+                <button type="button" @click="openMod = openMod === i ? -1 : i" :aria-expanded="openMod === i" style="width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 12px; text-align: left; background: #fff; border: 0; padding: 16px 18px; min-height: 56px">
+                  <span class="stack" style="gap: 2px"><span class="mono muted" style="font-size: 12px" x-text="'LESSON ' + (i + 1) + ' · ' + m.mins"></span><span style="font-size: 17px; font-weight: 600" x-text="m.title"></span></span>
+                  <span class="pill alert-ok" style="font-size: 13px; padding: 6px 12px" x-show="trained.includes(i)">✓ Complete</span>
+                  <span class="mono" style="font-size: 18px" x-show="!trained.includes(i)" x-text="openMod === i ? '−' : '+'"></span>
+                </button>
+                <div x-show="openMod === i" style="padding: 0 18px 18px; border-top: 1px solid #EEEEEA">
+                  <p style="margin: 14px 0; color: var(--ink-2); line-height: 1.6" x-text="m.body"></p>
+                  <button type="button" class="btn btn-sm btn-dark" x-show="!trained.includes(i)" @click="completeModule(i)">Mark complete</button>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <!-- 7 AGREEMENT -->
+        <div x-show="step === 6" x-cloak>
+          <p class="eyebrow" style="font-size: 12px">07 · Agreement &amp; payouts</p>
+          <h1 class="step-title">Sign and choose how you're paid.</h1>
+          <p class="muted" style="margin: 0 0 20px">Read the fellow agreement, then sign with your full legal name.</p>
+          <div tabindex="0" aria-label="Fellow agreement summary" style="height: 190px; overflow-y: auto; border: 1px solid var(--line); border-radius: 12px; padding: 16px; background: var(--ground); font-size: 14px; line-height: 1.6; color: var(--ink-2)">
+            <p style="margin: 0 0 10px"><strong>Plumbline Fellow Agreement (summary)</strong></p>
+            <p style="margin: 0 0 10px">1. You work as an independent contractor and choose your own hours.</p>
+            <p style="margin: 0 0 10px">2. Project materials, prompts and model outputs are confidential. Don't share, copy or discuss them outside the workspace.</p>
+            <p style="margin: 0 0 10px">3. Do your own work. Don't use AI tools to complete tasks unless a project explicitly allows it.</p>
+            <p style="margin: 0 0 10px">4. You're paid for approved working time at the rate shown on each project.</p>
+            <p style="margin: 0">5. <span x-text="D.PAY"></span> <a href="legal.html#agreement" target="_blank" class="accent" style="font-weight: 600">Read the full agreement</a></p>
+          </div>
+          <div class="stack" style="gap: 12px; margin: 18px 0 22px">
+            <label class="check"><input type="checkbox" x-model="f.agree1"><span>I've read and agree to the Fellow agreement.</span></label>
+            <label class="check"><input type="checkbox" x-model="f.agree2"><span>I'll keep project materials confidential and complete tasks myself.</span></label>
+          </div>
+          <div class="row" style="gap: 18px">
+            <div class="field"><label class="label" for="ob-sign">Signature (type your full legal name)</label><input id="ob-sign" class="input" type="text" x-model="f.sign" :placeholder="f.name || 'Your full legal name'" style="font-family: var(--display); font-style: italic; font-size: 20px"></div>
+            <div class="field"><label class="label" for="ob-payout">Payout method</label><select id="ob-payout" class="input" x-model="f.payout"><option value="">Select</option><template x-for="o in D.PAYOUTS" :key="o"><option :value="o" x-text="o" :selected="f.payout === o"></option></template></select></div>
+          </div>
+          <p class="muted" style="margin: 14px 0 0; font-size: 13px">You'll add account details from Payments in your workspace once you're verified — never by email.</p>
+        </div>
+
+        <!-- 8 READY -->
+        <div x-show="step === 7" x-cloak>
+          <div aria-hidden="true" style="position: relative; height: 90px; margin-bottom: 8px"><div style="position: absolute; left: 22px; top: 0; width: 2px; height: 64px; background: var(--ink)"></div><div style="position: absolute; left: 13px; top: 60px; width: 20px; height: 20px; background: var(--accent); transform: rotate(45deg)"></div></div>
+          <p class="eyebrow" style="font-size: 12px">08 · Ready to task</p>
+          <h1 class="step-title" style="font-size: clamp(34px, 5vw, 52px)" x-text="'You’re in, ' + firstName + '.'"></h1>
+          <p style="margin: 0 0 26px; font-size: 17px; color: var(--ink-2)">Your profile is complete and your first tasks are waiting in the workspace.</p>
+          <dl style="margin: 0 0 28px; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); border-top: 1px solid var(--line)">
+            <template x-for="row in summary" :key="row[0]"><div style="padding: 14px 16px 14px 0; border-bottom: 1px solid var(--line)"><dt class="mono muted" style="font-size: 12px; text-transform: uppercase; letter-spacing: .05em" x-text="row[0]"></dt><dd style="margin: 4px 0 0; font-weight: 600" x-text="row[1]"></dd></div></template>
+          </dl>
+          <div class="row" style="gap: 12px"><a class="btn btn-lg btn-primary" href="workspace.html">Start your first task →</a><a class="btn btn-lg" href="roles.html">Browse more roles</a></div>
+        </div>
+
+        <!-- ERROR + NAV -->
+        <p class="alert alert-err" role="alert" style="margin-top: 24px" x-show="err" x-text="err"></p>
+        <div x-show="step < 7" class="row" style="margin-top: 32px; padding-top: 22px; border-top: 1px solid var(--line); justify-content: space-between; align-items: center; gap: 12px">
+          <button type="button" class="btn" x-show="step > 0" @click="back()" :disabled="busy">← Back</button>
+          <a href="index.html" x-show="step === 0" style="font-weight: 600; padding: 12px 0">← Back to home</a>
+          <button type="button" class="btn btn-lg btn-primary" @click="next()" :disabled="busy">
+            <span class="spinner" x-show="busy" aria-hidden="true" style="border-top-color: #fff"></span>
+            <span x-text="busy ? 'Saving…' : (step === 0 && !signedIn ? 'Create account' : (step === 6 ? 'Sign and finish' : 'Continue'))"></span>
+          </button>
+        </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+</body>
+</html>
